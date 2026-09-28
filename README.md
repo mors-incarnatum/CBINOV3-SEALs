@@ -76,7 +76,7 @@ Here's a blank template to get started. To avoid retyping too much info, do a se
    ```
 2. Go to Project Directory
     ```sh
-   cd CBINOV3-SEALs
+   cd CBINOV3-SEALs/seals
    ```
 3. Install NPM packages
    ```sh
@@ -133,7 +133,7 @@ Don't forget to give the project a star! Thanks again!
 
 ### Top contributors:
 
-<a href="https://github.com/mors-incarnatum/CBINOV3-SEALs/graphs/contributors?from=6%2F20%2F2026">
+<a href="https://github.com/mors-incarnatum/CBINOV3-SEALs/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=mors-incarnatum/CBINOV3-SEALs" alt="contrib.rocks image" />
 </a>
 
