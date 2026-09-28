@@ -76,7 +76,7 @@ Here's a blank template to get started. To avoid retyping too much info, do a se
    ```
 2. Go to Project Directory
     ```sh
-   cd seals
+   cd CBINOV3-SEALs
    ```
 3. Install NPM packages
    ```sh
