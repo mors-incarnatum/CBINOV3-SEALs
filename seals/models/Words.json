@@ -1,38 +1,37 @@
 {
     "words": {
-        "Pangangailangan (Needs)":[
-            "Tubig",
-            "Banyo",
-            "Masakit",
-            "Masakit",
-            "Pagod",
-            "Tulong",
+        "Needs / Emergency": [
             "Kain",
-            "Inom"
+            "Inom",
+            "Tubig",
+            "CR / Banyo",
+            "Tulong"
         ],
-        "Oo/Hindi/Tigil (Yes/No/Stop)":[
+        "Actions / Response": [
             "Oo",
             "Hindi",
-            "Tigil",
-            "Sandali",
-            "Ayoko"
-        ],
-        "Tao (People)":[
-            "Nanay",
-            "Guro"
-        ],
-        "Damdamin (Feelings)":[
-            "Masaya",
-            "Lungkot",
-            "Galit"
-        ],
-        "Karaniwang Hiling (Common requests)":[
-            "Gusto ko pa",
-            "Pakisuyo",
+            "Teka / Sandali",
+            "Paki / Pakisuyo",
             "Tapos na"
+        ],
+        "People": [
+            "Mama / Nanay",
+            "Papa / Tatay",
+            "Ate",
+            "Kuya",
+            "Teacher / Guro"
+        ],
+        "Feelings": [
+            "Masaya",
+            "Malungkot",
+            "Galit",
+            "Masakit",
+            "Pagod"
+        ],
+        "Archive": [
+            "Tigil",
+            "Ayoko",
+            "Gusto ko pa"
         ]
-
-
-
     }    
 }
