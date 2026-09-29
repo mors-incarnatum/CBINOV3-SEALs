@@ -11,6 +11,22 @@ interface TileHashMap {
   gifPath: string;
 }
 
+function normalizeGifSlug(word: string): string {
+  return word
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[\/]+/g, " ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-+/g, "-");
+}
+
+function resolveGifPath(word: string): string {
+  return `/gifs/${normalizeGifSlug(word)}.gif`;
+}
+
 export default function Home() {
   // Hash map / Array list state for tiles. Starts empty so prior to JSON load there is no text.
   const [tiles, setTiles] = useState<TileHashMap[]>([]);
@@ -33,8 +49,8 @@ export default function Home() {
               id: String(count++),
               label: word,
               category: categoryName,
-              // Converts e.g. "I Want" to "/gifs/i-want.gif"
-              gifPath: `/gifs/${word.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')}.gif`,
+              // Resolve valid GIF paths and skip missing assets cleanly.
+              gifPath: resolveGifPath(word),
             });
           });
         }
@@ -123,16 +139,24 @@ export default function Home() {
                         onClick={() => handleTilePress(tile.label)}
                         className="bg-white border border-slate-300 rounded-none shadow-xs hover:border-sky-600 hover:bg-sky-50/50 active:bg-sky-100 active:border-sky-700 transition-all duration-100 flex flex-col items-center justify-center p-2 focus:outline-none focus:ring-2 focus:ring-sky-600/40 relative group flex-1"
                       >
-                        {/* Icons Temporaryly Hidden
                         <img
                           src={tile.gifPath}
                           alt={tile.label}
                           className="w-12 h-12 md:w-16 md:h-16 object-contain mb-1 md:mb-2 group-hover:scale-105 transition-transform"
                           onError={(e) => {
-                            (e.currentTarget as HTMLImageElement).style.display = 'none';
+                            const target = e.currentTarget;
+                            target.style.display = "none";
+                            if (target.nextElementSibling) {
+                              (target.nextElementSibling as HTMLElement).style.display = "flex";
+                            }
                           }}
                         />
-                        */}
+                        <div
+                          className="w-12 h-12 md:w-16 md:h-16 mb-1 md:mb-2 items-center justify-center text-xs font-bold text-slate-400"
+                          style={{ display: "none" }}
+                        >
+                          GIF
+                        </div>
                         <span className="text-lg lg:text-xl font-semibold text-slate-800 text-center leading-tight">
                           {tile.label}
                         </span>
