@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SEALs AAC Board",
+  title: "WiKahon",
   description: "Augmentative and Alternative Communication Board for non-verbal users",
 };
 

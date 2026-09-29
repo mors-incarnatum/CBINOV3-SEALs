@@ -52,6 +52,14 @@ export default function Home() {
     playTTS(word, volume);
   };
 
+  // Define our 4 core categories to render as columns
+  const activeCategories = [
+    "Needs / Emergency",
+    "Actions / Response",
+    "People",
+    "Feelings"
+  ];
+
   return (
     <div className="flex flex-col h-screen bg-slate-200 text-slate-900 font-sans antialiased select-none p-3 gap-3">
       {/* Header Area */}
@@ -59,10 +67,10 @@ export default function Home() {
         {/* Top-Left Logo / Title (Lighter/Lower Hue Blue) */}
         <div className="flex items-center space-x-3 shrink-0">
           <div className="w-8 h-8 bg-sky-700 text-white font-bold text-lg flex items-center justify-center rounded-none shadow-xs">
-            S
+            W
           </div>
-          <h1 className="text-lg font-bold tracking-tight text-slate-800 uppercase">
-            SEALs AAC Board
+          <h1 className="text-lg font-bold text-slate-800">
+            WiKahon
           </h1>
         </div>
 
@@ -93,37 +101,53 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Main Grid Area: 5 columns x 4 rows */}
+      {/* Main Grid Area: 4 Columns with Category Headers */}
       <main className="flex-1 min-h-0 flex flex-col">
-        <div className="w-full h-full grid grid-cols-5 grid-rows-4 gap-2.5">
-          {/* Render tiles dynamically once JSON array list hash is populated */}
-          {tiles.length > 0
-            ? tiles.slice(0, 20).map((tile) => (
-                <button
-                  key={tile.id}
-                  onClick={() => handleTilePress(tile.label)}
-                  className="bg-white border border-slate-300 rounded-none shadow-xs hover:border-sky-600 hover:bg-sky-50/50 active:bg-sky-100 active:border-sky-700 transition-all duration-100 flex flex-col items-center justify-center p-2 focus:outline-none focus:ring-2 focus:ring-sky-600/40 relative group"
-                >
-                  <img
-                    src={tile.gifPath}
-                    alt={tile.label}
-                    className="w-12 h-12 md:w-16 md:h-16 object-contain mb-1 md:mb-2 group-hover:scale-105 transition-transform"
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).style.display = 'none';
-                    }}
-                  />
-                  <span className="text-lg lg:text-xl font-semibold text-slate-800 text-center leading-tight">
-                    {tile.label}
-                  </span>
-                </button>
-              ))
-            : // Prior to loading, render 20 blank tiles with no text
-              Array.from({ length: 20 }).map((_, index) => (
-                <div
-                  key={index}
-                  className="bg-white border border-slate-200 rounded-none shadow-xs"
-                />
-              ))}
+        <div className="w-full h-full grid grid-cols-4 gap-3">
+          {activeCategories.map((categoryName) => {
+            // Filter tiles for the current column
+            const categoryTiles = tiles.filter((t) => t.category === categoryName);
+            
+            return (
+              <div key={categoryName} className="flex flex-col gap-2 h-full">
+                {/* Category Header */}
+                <div className="text-center font-bold text-sm md:text-base text-slate-700 bg-slate-300/50 py-1.5 border border-slate-300 rounded-none shadow-xs shrink-0">
+                  {categoryName}
+                </div>
+                
+                {/* Column Tiles */}
+                {categoryTiles.length > 0
+                  ? categoryTiles.map((tile) => (
+                      <button
+                        key={tile.id}
+                        onClick={() => handleTilePress(tile.label)}
+                        className="bg-white border border-slate-300 rounded-none shadow-xs hover:border-sky-600 hover:bg-sky-50/50 active:bg-sky-100 active:border-sky-700 transition-all duration-100 flex flex-col items-center justify-center p-2 focus:outline-none focus:ring-2 focus:ring-sky-600/40 relative group flex-1"
+                      >
+                        {/* Icons Temporaryly Hidden
+                        <img
+                          src={tile.gifPath}
+                          alt={tile.label}
+                          className="w-12 h-12 md:w-16 md:h-16 object-contain mb-1 md:mb-2 group-hover:scale-105 transition-transform"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                        */}
+                        <span className="text-lg lg:text-xl font-semibold text-slate-800 text-center leading-tight">
+                          {tile.label}
+                        </span>
+                      </button>
+                    ))
+                  : // Prior to JSON load, render 5 blank flexible placeholders per column
+                    Array.from({ length: 5 }).map((_, index) => (
+                      <div
+                        key={`placeholder-${categoryName}-${index}`}
+                        className="bg-white border border-slate-200 rounded-none shadow-xs flex-1"
+                      />
+                    ))}
+              </div>
+            );
+          })}
         </div>
       </main>
     </div>
