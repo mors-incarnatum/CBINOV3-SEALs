@@ -19,3 +19,43 @@ body {
   color: var(--foreground);
   font-family: var(--font-geist-sans), sans-serif;
 }
+
+.category-wheel[open] {
+  animation: wheel-in 180ms cubic-bezier(.2, .8, .2, 1) both;
+  filter: drop-shadow(0 12px 24px rgb(15 23 42 / .2));
+}
+
+.category-wheel::backdrop {
+  background: rgb(15 23 42 / .16);
+  backdrop-filter: blur(2px);
+  animation: board-fade-in 160ms ease-out both;
+}
+
+.wheel-sector { cursor: pointer; outline: none; }
+.wheel-sector-shape {
+  transform-origin: 150px 150px;
+  transition: fill 140ms ease, stroke-opacity 140ms ease, transform 160ms ease;
+}
+.wheel-sector[data-active="true"] .wheel-sector-shape { transform: scale(1.025); }
+.wheel-sector:focus-visible .wheel-sector-shape { stroke-width: 3; stroke-opacity: 1; }
+.wheel-sector:active .wheel-sector-shape { transform: scale(.985); }
+.wheel-center { box-shadow: 0 2px 12px rgb(15 23 42 / .06); transition: background 140ms ease; }
+.wheel-center:hover { background: #f8fafc; }
+.board-modal[open] { animation: board-modal-in 180ms ease-out both; }
+.board-page-enter { animation: board-page-in 200ms ease-out both; }
+.category-empty, .category-add { cursor: pointer; transition: filter 140ms ease, box-shadow 140ms ease; }
+.category-empty:hover, .category-add:hover { filter: brightness(.97); box-shadow: inset 0 0 0 1px currentColor; }
+.category-empty span { transition: transform 140ms ease; }
+.category-empty:hover span { transform: scale(1.1); }
+.category-empty:active span { transform: scale(.95); }
+
+@keyframes wheel-in { from { opacity: 0; transform: scale(.94); } to { opacity: 1; transform: scale(1); } }
+@keyframes board-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes board-modal-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes board-page-in { from { opacity: .4; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .category-wheel[open], .category-wheel::backdrop, .board-modal[open], .board-page-enter { animation: none; }
+  .wheel-sector-shape, .wheel-center, .category-empty, .category-empty span, .category-add { transition: none; }
+  .wheel-sector[data-active="true"] .wheel-sector-shape, .wheel-sector:active .wheel-sector-shape, .category-empty:hover span, .category-empty:active span { transform: none; }
+}
