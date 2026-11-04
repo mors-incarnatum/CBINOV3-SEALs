@@ -16,9 +16,19 @@ export default function CategoryBoard({
   const speak = useBoardSpeech();
   const [page, setPage] = useState(0);
   const [adding, setAdding] = useState(false);
+  const [targetSlot, setTargetSlot] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const removeCategoryWord = useBoardStore((state) => state.removeCategoryWord);
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const held = useRef(false);
   const start = useRef<{ x: number; y: number } | null>(null);
   const swiped = useRef(false);
+  const holdOrigin = useRef({ x: 0, y: 0 });
   const pageCount = Math.ceil(words.length / 20);
+  const clearHoldTimer = () => {
+    if (holdTimer.current) clearTimeout(holdTimer.current);
+    holdTimer.current = null;
+  };
   const category = CATEGORIES[categoryId];
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-2 relative">
@@ -28,7 +38,11 @@ export default function CategoryBoard({
         </div>
         <button
           type="button"
-          onClick={() => setAdding(true)}
+          onClick={() => {
+            const firstEmpty = words.findIndex((word) => word === null);
+            setTargetSlot(firstEmpty === -1 ? words.length : firstEmpty);
+            setAdding(true);
+          }}
           className="category-add border px-4 text-sm font-semibold"
           style={{
             background: category.fill,
@@ -73,31 +87,91 @@ export default function CategoryBoard({
         {Array.from({ length: 20 }, (_, index) => {
           const tile = words[page * 20 + index];
           return tile ? (
-            <TileButton
-              key={tile.id}
-              id={tile.id}
-              label={tile.label}
-              category={category.label}
-              gifPath={iconPath(tile.iconName)}
-              buttonProps={{
-                onPointerDown: (event) => {
-                  if (event.pointerType !== "touch") swiped.current = false;
-                },
-                onKeyDown: () => {
-                  swiped.current = false;
-                },
-              }}
-              onPress={(word) => {
-                if (!swiped.current) speak(word);
-              }}
-            />
+            <div key={tile.id} className="relative min-h-0 flex">
+              <TileButton
+                id={tile.id}
+                label={tile.label}
+                category={category.label}
+                gifPath={iconPath(tile.iconName)}
+                editing={editingId === tile.id}
+                buttonProps={{
+                  "aria-label": `${tile.label}. Hold to remove.`,
+                  onPointerDown: (event) => {
+                    if (event.button !== 0) return;
+                    clearHoldTimer();
+                    held.current = false;
+                    holdOrigin.current = {
+                      x: event.clientX,
+                      y: event.clientY,
+                    };
+                    holdTimer.current = setTimeout(() => {
+                      held.current = true;
+                      setEditingId(tile.id);
+                    }, 500);
+                  },
+                  onPointerUp: clearHoldTimer,
+                  onPointerLeave: clearHoldTimer,
+                  onPointerCancel: clearHoldTimer,
+                  onPointerMove: (event) => {
+                    if (
+                      Math.hypot(
+                        event.clientX - holdOrigin.current.x,
+                        event.clientY - holdOrigin.current.y,
+                      ) > 10
+                    ) {
+                      clearHoldTimer();
+                    }
+                  },
+                  onKeyDown: (event) => {
+                    if (event.key === "F2") {
+                      event.preventDefault();
+                      setEditingId(tile.id);
+                    }
+                    if (event.key === "Escape") {
+                      setEditingId(null);
+                    }
+                  },
+                }}
+                onPress={(word) => {
+                  if (held.current) {
+                    held.current = false;
+                    return;
+                  }
+
+                  if (editingId === tile.id) {
+                    setEditingId(null);
+                    return;
+                  }
+
+                  speak(word);
+                }}
+              />
+
+              {editingId === tile.id && (
+                <button
+                  type="button"
+                  aria-label={`Remove ${tile.label} from ${category.label}`}
+                  onClick={() => {
+                    removeCategoryWord(categoryId, tile.id);
+                    held.current = false;
+                    setEditingId(null);
+                  }}
+                  className="absolute top-2 right-2 z-10 w-7 h-7 rounded-full bg-red-100 border border-red-500 text-red-600 flex items-center justify-center font-bold"
+                >
+                  −
+                </button>
+              )}
+            </div>
           ) : (
             <button
               key={`empty-${index}`}
               type="button"
               aria-label={`Add word to ${category.wheel}`}
               onClick={() => {
-                if (!swiped.current) setAdding(true);
+                if (!swiped.current) {
+                  setTargetSlot(page * 20 + index);
+                  setAdding(true);
+                }
               }}
               onPointerDown={(event) => {
                 if (event.pointerType !== "touch") swiped.current = false;
@@ -148,11 +222,15 @@ export default function CategoryBoard({
       {adding && (
         <WordPicker
           category={categoryId}
+          categorySlotIndex={targetSlot}
           onCreated={() => {
-            setPage(Math.floor(words.length / 20));
+            setPage(Math.floor((targetSlot ?? 0) / 20));
             swiped.current = false;
           }}
-          onClose={() => setAdding(false)}
+          onClose={() => {
+            setAdding(false);
+            setTargetSlot(null);
+          }}
         />
       )}
     </div>
