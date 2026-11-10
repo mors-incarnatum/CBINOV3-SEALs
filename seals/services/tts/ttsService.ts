@@ -7,8 +7,11 @@ async function synthesizeCloud(text: string) {
     const { puter } = await import("@heyputer/puter.js");
     // Communication must never be interrupted by a cloud sign-in popup.
     if (!puter.auth.isSignedIn()) throw new Error("Cloud speech is not connected");
-    // https://docs.puter.com/AI/txt2speech/ documents the ElevenLabs adapter.
-    return puter.ai.txt2speech(text, { provider: "elevenlabs", model: "eleven_flash_v2_5" });
+    return puter.ai.txt2speech(text, {
+        voice: "Andres",
+        engine: "neural",
+        language: "es-MX",
+    });
 }
 export class TTSService implements ITTSService {
     private audio: HTMLAudioElement | null = null;
