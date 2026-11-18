@@ -18,10 +18,7 @@ export const CATEGORIES = {
     feelings: { label: "Feelings", wheel: "Feelings", background: "#EFF6FF", fill: "#DBEAFE", color: "#1E3A8A" },
 } as const;
 export const isCategoryId = (value: string): value is CategoryId => CATEGORY_IDS.some(id => id === value);
-const seeds: Record<CategoryId, [
-    string,
-    string
-][]> = {
+const seeds: Record<CategoryId, [string, string][]> = {
     needs: [["Kain", "eat"], ["Inom", "drink"], ["Tubig", "water"], ["Banyo", "toilet"], ["Tulong", "help"]],
     actions: [["Oo", "yes"], ["Hindi", "no"], ["Sandali", "wait"], ["Pakisuyo", "please"], ["Tapos na", "done"]],
     people: [["Nanay", "mother"], ["Tatay", "father"], ["Ate", "sister"], ["Kuya", "brother"], ["Guro", "teacher"]],
@@ -66,6 +63,7 @@ export interface CatalogBoard {
     iconName: string | null;
     isBuiltIn: boolean;
     gridOverride?: GridConfig;
+    layoutModeOverride?: "manual" | "automatic";
     pages: BoardPage[];
 }
 export interface SentenceToken {

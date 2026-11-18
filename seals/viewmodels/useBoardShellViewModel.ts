@@ -8,7 +8,7 @@ export function useSentenceContext() { const vm = useContext(SentenceContext); i
     throw new Error("Sentence provider required"); return vm; }
 export function useBoardShellViewModel() {
     const sentence = useSentenceViewModel(), edit = useEditModeViewModel(), pathname = usePathname();
-    const [panel, setPanel] = useState<"settings" | "catalogs" | null>(null), [wheel, setWheel] = useState<{
+    const [panel, setPanel] = useState<"settings" | "catalogs" | "layout" | null>(null), [wheel, setWheel] = useState<{
         x: number;
         y: number;
     } | null>(null);
