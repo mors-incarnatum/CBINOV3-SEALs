@@ -1,24 +1,216 @@
 "use client";
 import Link from "next/link";
+import { resolveTileColor } from "@/lib/board";
+import { palette } from "@/app/theme";
 import { useBoardShellViewModel, SentenceContext } from "@/viewmodels/useBoardShellViewModel";
 import { EditContext } from "@/viewmodels/useEditModeViewModel";
 import SentenceStrip from "./SentenceStrip";
 import BoardSettings from "./BoardSettings";
 import CatalogManager from "./CatalogManager";
 import CategoryWheel from "./CategoryWheel";
+import ScribblePracticeModal from "./ScribblePracticeModal";
+import ParentChatModal from "./ParentChatModal";
+import LoginView from "./LoginView";
 import Modal from "./Modal";
-export default function BoardShell({ children }: {
-    children: React.ReactNode;
-}) {
+
+export default function BoardShell({ children }: { children: React.ReactNode }) {
     const vm = useBoardShellViewModel();
-    return <SentenceContext.Provider value={vm.sentence}><EditContext.Provider value={vm.edit}>
-  <div className="board-shell"><header className="board-header"><Link href="/board" className="brand"><b>W</b> WiKahon</Link><SentenceStrip /><div className="header-tools"><label className="volume-control">Volume<input aria-label="Volume" type="range" min="0" max="1" step="0.1" value={vm.sentence.state.volume} onChange={e => vm.sentence.actions.setVolume(Number(e.target.value))}/></label><button aria-pressed={vm.edit.state.isEditMode} onClick={vm.edit.actions.toggle}>✎ {vm.edit.state.isEditMode ? "Done editing" : "Edit"}</button><button onClick={() => vm.actions.setPanel("catalogs")}>Catalogs</button><button onClick={() => vm.actions.setPanel("settings")}>⚙ Settings</button></div></header>
-  {vm.edit.state.isEditMode && <p className="edit-notice" role="status">Edit mode · Select a tile to customize, move, or hide it. Select an empty slot to add a word or folder.</p>}
-  <main className="board-main" aria-label="Communication board. Right-click or press Shift F10 for catalogs." tabIndex={0} onContextMenu={vm.actions.onContextMenu} onKeyDown={vm.actions.onKeyDown}>{children}</main>
-  {vm.state.wheel && <CategoryWheel coords={vm.state.wheel} onClose={vm.actions.closeWheel} onManage={vm.actions.openCatalogs}/>}
-  {vm.state.panel === "settings" && <BoardSettings boardId={vm.state.boardId} onClose={() => vm.actions.setPanel(null)}/>}
-  {vm.state.panel === "catalogs" && <CatalogManager onClose={() => vm.actions.setPanel(null)}/>}
-  {vm.edit.state.pinDialog && <Modal label="Unlock edit mode" onClose={vm.edit.actions.closePin} className="editor-modal small-modal"><h2>Unlock edit mode</h2><label>PIN<input type="password" inputMode="numeric" value={vm.edit.state.pin} onChange={e => vm.edit.actions.setPin(e.target.value)}/></label><p role="alert">{vm.edit.state.error}</p><button onClick={vm.edit.actions.unlock}>Unlock</button><button onClick={vm.edit.actions.closePin}>Cancel</button></Modal>}
-  </div>
- </EditContext.Provider></SentenceContext.Provider>;
+
+    if (!vm.state.currentUser) {
+        return <LoginView />;
+    }
+
+    return (
+        <SentenceContext.Provider value={vm.sentence}>
+            <EditContext.Provider value={vm.edit}>
+                <div
+                    className="board-shell"
+                    onPointerDown={vm.edit.actions.touchActivity}
+                    onKeyDown={vm.edit.actions.touchActivity}
+                >
+                    <header className="board-header">
+                        <Link href="/board" className="brand">
+                            <b>W</b> WiKahon
+                        </Link>
+                        <SentenceStrip />
+                        <div className="header-tools">
+                            {vm.state.isGuardian ? (
+                                <>
+                                    <span
+                                        className="profile-badge"
+                                        aria-label={`Active profile: ${vm.state.activeProfileName}`}
+                                    >
+                                        Profile: {vm.state.activeProfileName}
+                                    </span>
+                                    <span
+                                        className="profile-badge"
+                                        aria-label={`Signed in guardian: ${vm.state.currentUser.name}`}
+                                    >
+                                        🔑 {vm.state.currentUser.name}
+                                    </span>
+                                    <label className="volume-control">
+                                        Volume
+                                        <input
+                                            aria-label="Volume"
+                                            type="range"
+                                            min="0"
+                                            max="1"
+                                            step="0.1"
+                                            value={vm.sentence.state.volume}
+                                            onChange={e => vm.sentence.actions.setVolume(Number(e.target.value))}
+                                        />
+                                    </label>
+                                </>
+                            ) : (
+                                <span
+                                    className="profile-badge"
+                                    aria-label={`Signed in child: ${vm.state.currentUser.name}`}
+                                >
+                                    👶 {vm.state.currentUser.name}
+                                </span>
+                            )}
+                            {vm.state.featureFlags?.scribblePractice && (
+                                <button type="button" onClick={() => vm.actions.setPanel("scribble")}>
+                                    ✍ Scribble
+                                </button>
+                            )}
+                            {vm.state.featureFlags?.parentChildChat && (
+                                <button type="button" onClick={() => vm.actions.setPanel("chat")}>
+                                    💬 Chat
+                                </button>
+                            )}
+                            {vm.state.isGuardian && (
+                                <>
+                                    <button
+                                        type="button"
+                                        aria-pressed={vm.edit.state.isEditMode}
+                                        onClick={vm.edit.actions.toggle}
+                                    >
+                                        ✎ {vm.edit.state.isEditMode ? "Done editing" : "Edit"}
+                                    </button>
+                                    <button type="button" onClick={() => vm.actions.setPanel("catalogs")}>
+                                        Catalogs
+                                    </button>
+                                    <button type="button" onClick={() => vm.actions.setPanel("settings")}>
+                                        ⚙ Settings
+                                    </button>
+                                </>
+                            )}
+                            <button type="button" onClick={vm.actions.logout}>
+                                Log out
+                            </button>
+                        </div>
+                    </header>
+
+                    {vm.state.storageError && (
+                        <div className="edit-notice" role="alert">
+                            <span>{vm.state.storageError}</span>{" "}
+                            {vm.state.isGuardian && (
+                                <>
+                                    <button type="button" onClick={() => vm.actions.setPanel("settings")}>
+                                        Open backup &amp; settings
+                                    </button>{" "}
+                                </>
+                            )}
+                            <button type="button" onClick={vm.actions.clearStorageError}>
+                                Dismiss
+                            </button>
+                        </div>
+                    )}
+
+                    {vm.state.isGuardian && vm.edit.state.isEditMode && (
+                        <p className="edit-notice" role="status">
+                            Edit mode · Select a tile to customize, move, or hide it. Select an empty slot to add a word or folder.
+                        </p>
+                    )}
+
+                    {vm.state.featureFlags?.pinnedVocabulary && vm.state.pinnedTiles.length > 0 && (
+                        <nav
+                            className="flex flex-wrap items-center gap-1.5 px-2 py-1.5 bg-white border border-slate-300 rounded-md shrink-0"
+                            aria-label="Pinned core vocabulary"
+                        >
+                            <span className="text-xs font-semibold text-slate-600 mr-1">Pinned:</span>
+                            {vm.state.pinnedTiles.map(tile => {
+                                const color = resolveTileColor(
+                                    tile,
+                                    vm.state.boards,
+                                    vm.state.tileAppearance.colorMode,
+                                );
+                                return (
+                                    <button
+                                        key={tile.id}
+                                        type="button"
+                                        style={palette[color]}
+                                        className="px-2.5 py-1 text-xs font-semibold border rounded-md"
+                                        onClick={() => vm.sentence.actions.onTileActivate(tile)}
+                                    >
+                                        {tile.label}
+                                    </button>
+                                );
+                            })}
+                        </nav>
+                    )}
+
+                    <main
+                        className="board-main"
+                        aria-label={
+                            vm.state.wheelEnabled
+                                ? "Communication board. Right-click or press Shift F10 for catalogs."
+                                : "Communication board."
+                        }
+                        tabIndex={0}
+                        onContextMenu={vm.actions.onContextMenu}
+                        onKeyDown={vm.actions.onKeyDown}
+                    >
+                        {children}
+                    </main>
+
+                    {vm.state.wheelEnabled && vm.state.wheel && (
+                        <CategoryWheel
+                            coords={vm.state.wheel}
+                            onClose={vm.actions.closeWheel}
+                            onManage={vm.actions.openCatalogs}
+                        />
+                    )}
+                    {vm.state.isGuardian && vm.state.panel === "settings" && (
+                        <BoardSettings boardId={vm.state.boardId} onClose={() => vm.actions.setPanel(null)} />
+                    )}
+                    {vm.state.isGuardian && vm.state.panel === "catalogs" && (
+                        <CatalogManager onClose={() => vm.actions.setPanel(null)} />
+                    )}
+                    {vm.state.panel === "scribble" && vm.state.featureFlags?.scribblePractice && (
+                        <ScribblePracticeModal onClose={() => vm.actions.setPanel(null)} />
+                    )}
+                    {vm.state.panel === "chat" && vm.state.featureFlags?.parentChildChat && (
+                        <ParentChatModal onClose={() => vm.actions.setPanel(null)} />
+                    )}
+                    {vm.state.isGuardian && vm.edit.state.pinDialog && (
+                        <Modal
+                            label="Unlock edit mode"
+                            onClose={vm.edit.actions.closePin}
+                            className="editor-modal small-modal"
+                        >
+                            <h2>Unlock edit mode</h2>
+                            <label>
+                                PIN
+                                <input
+                                    type="password"
+                                    inputMode="numeric"
+                                    value={vm.edit.state.pin}
+                                    onChange={e => vm.edit.actions.setPin(e.target.value)}
+                                />
+                            </label>
+                            <p role="alert">{vm.edit.state.error}</p>
+                            <button type="button" onClick={() => void vm.edit.actions.unlock()}>
+                                Unlock
+                            </button>
+                            <button type="button" onClick={vm.edit.actions.closePin}>
+                                Cancel
+                            </button>
+                        </Modal>
+                    )}
+                </div>
+            </EditContext.Provider>
+        </SentenceContext.Provider>
+    );
 }

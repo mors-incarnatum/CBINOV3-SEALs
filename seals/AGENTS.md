@@ -12,6 +12,8 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 1. Do not touch anything in the codebase that is not explicitly told to.
 2. README should not be updated or touched in any way.
 3. Drastic changes require explicit permission.
+4. Do not read .env
+5. Do not make tests
 <!-- END:project-rules -->
 
 <!-- BEGIN:project-architecture -->
