@@ -44,6 +44,15 @@ export interface ITTSService {
 
 export type CloudSynthesize = (text: string, options: { voice?: string; language?: string }) => Promise<HTMLAudioElement>;
 
+export const ANDRES_VOICE: VoiceDescriptor = {
+    id: "Andres",
+    name: "Andres (es-MX)",
+    lang: "es-MX",
+    provider: "cloud-puter",
+    offlineAvailability: "unavailable",
+    isFilipinoCompatible: false,
+};
+
 const FILIPINO_LANG_RE = /^(fil|tl)(-|$)/i;
 
 export function isLanguageCompatible(voiceLang: string, targetLang = "fil-PH"): boolean {
@@ -60,39 +69,11 @@ async function synthesizeCloud(
     text: string,
     options: { voice?: string; language?: string },
 ): Promise<HTMLAudioElement> {
-    if (!options.voice || !options.language) {
-        throw new SpeechError(
-            "unavailable-voice",
-            "A cloud voice and language must be configured.",
-        );
-    }
     const { puter } = await import("@heyputer/puter.js");
     return puter.ai.txt2speech(text, {
-        voice: options.voice,
+        voice: options.voice ?? ANDRES_VOICE.id,
         engine: "neural",
-        language: options.language,
-    });
-}
-
-function waitForLocalVoices(timeoutMs = 1200): Promise<SpeechSynthesisVoice[]> {
-    if (typeof window === "undefined" || !window.speechSynthesis) {
-        return Promise.resolve([]);
-    }
-    const existing = window.speechSynthesis.getVoices();
-    if (existing.length > 0) {
-        return Promise.resolve(existing);
-    }
-    return new Promise(resolve => {
-        let settled = false;
-        const done = () => {
-            if (settled) return;
-            settled = true;
-            window.speechSynthesis.removeEventListener?.("voiceschanged", onVoices);
-            resolve(window.speechSynthesis.getVoices());
-        };
-        const onVoices = () => done();
-        window.speechSynthesis.addEventListener?.("voiceschanged", onVoices);
-        setTimeout(done, timeoutMs);
+        language: options.language ?? ANDRES_VOICE.lang,
     });
 }
 
@@ -115,80 +96,12 @@ export class TTSService implements ITTSService {
     }
 
     async listVoices(): Promise<VoiceDescriptor[]> {
-        const voices = await waitForLocalVoices();
-        return voices.map(v => ({
-            id: v.voiceURI || v.name,
-            name: v.name,
-            lang: v.lang,
-            provider: "local",
-            offlineAvailability: v.localService ? "known" : "unknown",
-            isFilipinoCompatible: FILIPINO_LANG_RE.test(v.lang),
-        }));
-    }
-
-    private async speakLocal(
-        req: Required<Pick<SpeakRequest, "text" | "languageTag" | "rate" | "volume">> & { voiceId: string | null },
-        generation: number,
-    ): Promise<void> {
-        if (typeof window === "undefined" || !window.speechSynthesis) {
-            throw new SpeechError("unavailable-voice", "Speech is unavailable on this device.");
-        }
-        const voices = await waitForLocalVoices();
-        if (generation !== this.generation) return;
-
-        let chosen: SpeechSynthesisVoice | undefined;
-        if (req.voiceId) {
-            chosen = voices.find(v => (v.voiceURI || v.name) === req.voiceId);
-        }
-        if (!chosen) {
-            chosen = voices.find(v => isLanguageCompatible(v.lang, req.languageTag));
-        }
-
-        if (!chosen) {
-            throw new SpeechError(
-                "unavailable-voice",
-                `No compatible ${req.languageTag} voice is installed on this device. Visual communication remains available.`,
-            );
-        }
-
-        if (!isLanguageCompatible(chosen.lang, req.languageTag)) {
-            throw new SpeechError(
-                "unavailable-voice",
-                `Selected voice (${chosen.lang}) does not match ${req.languageTag}.`,
-            );
-        }
-
-        await new Promise<void>((resolve, reject) => {
-            const utterance = new SpeechSynthesisUtterance(req.text);
-            utterance.lang = chosen.lang || req.languageTag;
-            utterance.voice = chosen;
-            utterance.volume = Math.max(0, Math.min(1, req.volume));
-            utterance.rate = Math.max(0.5, Math.min(2, req.rate));
-            const cleanup = () => {
-                utterance.onend = null;
-                utterance.onerror = null;
-                if (this.finish === resolve) this.finish = null;
-            };
-            this.finish = resolve;
-            utterance.onend = () => {
-                cleanup();
-                resolve();
-            };
-            utterance.onerror = event => {
-                cleanup();
-                if (event.error === "canceled" || event.error === "interrupted") {
-                    resolve();
-                } else {
-                    reject(new SpeechError("playback-failed", "Speech playback failed on this device."));
-                }
-            };
-            try {
-                window.speechSynthesis.speak(utterance);
-            } catch (error) {
-                cleanup();
-                reject(error);
-            }
-        });
+        const voices = typeof window === "undefined" ? [] : window.speechSynthesis?.getVoices() ?? [];
+        return [...voices.filter(voice => voice.localService).map(voice => ({
+            id: voice.voiceURI, name: voice.name, lang: voice.lang, provider: "local" as const,
+            offlineAvailability: "known" as const,
+            isFilipinoCompatible: isLanguageCompatible(voice.lang),
+        })), ANDRES_VOICE];
     }
 
     private async speakCloud(
@@ -196,12 +109,14 @@ export class TTSService implements ITTSService {
         voice: string,
         language: string,
         volume: number,
+        rate: number,
         generation: number,
     ): Promise<void> {
         const audio = await this.synthesize(text, { voice, language });
         if (generation !== this.generation) return;
         this.audio = audio;
         audio.volume = Math.max(0, Math.min(1, volume));
+        audio.playbackRate = Math.max(0.5, Math.min(2, rate));
         await new Promise<void>((resolve, reject) => {
             const cleanup = () => {
                 audio.onended = null;
@@ -243,41 +158,51 @@ export class TTSService implements ITTSService {
         const text = req.text.trim();
         if (!text) return;
 
-        const provider = req.provider ?? "local";
+        const provider = req.provider ?? "cloud-puter";
         if (provider === "none") {
             throw new SpeechError("unavailable-voice", "Speech output is disabled in profile settings.");
         }
 
-        const languageTag = req.languageTag || "fil-PH";
-        const volume = req.volume ?? 1;
-        const rate = req.rate ?? 1;
-
-        const attempts: (() => Promise<void>)[] = [];
-        if (provider === "cloud-puter" && req.voiceId &&
-            (typeof navigator === "undefined" || navigator.onLine !== false)) {
-            const voiceId = req.voiceId;
-            attempts.push(() => this.speakCloud(text, voiceId, languageTag, volume, generation));
-        }
-        if (provider === "local" && req.voiceId) {
-            const voiceId = req.voiceId;
-            attempts.push(() => this.speakLocal({ text, languageTag, rate, volume, voiceId }, generation));
-        }
-        attempts.push(() => this.speakLocal({ text, languageTag, rate, volume, voiceId: null }, generation));
-
-        let lastError: unknown;
-        for (const attempt of attempts) {
-            if (generation !== this.generation) return;
-            try {
-                await attempt();
-                return;
-            } catch (error) {
-                if (generation !== this.generation) return;
-                lastError = error;
+        if (provider === "local") {
+            const synth = typeof window === "undefined" ? undefined : window.speechSynthesis;
+            if (!synth || typeof SpeechSynthesisUtterance === "undefined") {
+                throw new SpeechError("unavailable-voice", "Local speech is unavailable on this device.");
             }
+            const language = req.languageTag ?? "fil-PH";
+            const voices = synth.getVoices().filter(voice => voice.localService && isLanguageCompatible(voice.lang, language));
+            const voice = voices.find(v => v.voiceURI === req.voiceId) ?? voices[0];
+            if (!voice) throw new SpeechError("unavailable-voice", `No installed voice supports ${language}.`);
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.voice = voice;
+            utterance.lang = voice.lang;
+            utterance.rate = Math.max(0.5, Math.min(2, req.rate ?? 1));
+            utterance.volume = Math.max(0, Math.min(1, req.volume ?? 1));
+            await new Promise<void>((resolve, reject) => {
+                this.finish = resolve;
+                utterance.onend = () => { if (this.finish === resolve) this.finish = null; resolve(); };
+                utterance.onerror = () => {
+                    if (this.finish === resolve) this.finish = null;
+                    if (generation !== this.generation) resolve();
+                    else reject(new SpeechError("playback-failed", "Local speech playback failed."));
+                };
+                synth.speak(utterance);
+            });
+            return;
         }
-        throw lastError instanceof SpeechError
-            ? lastError
-            : new SpeechError("provider-failed", "Speech playback failed for the configured provider.");
+        if (typeof navigator !== "undefined" && navigator.onLine === false) {
+            throw new SpeechError("provider-failed", "Cloud speech (Andres) requires an internet connection.");
+        }
+
+        const volume = req.volume ?? 1;
+
+        try {
+            await this.speakCloud(text, ANDRES_VOICE.id, ANDRES_VOICE.lang, volume, req.rate ?? 1, generation);
+        } catch (error) {
+            if (generation !== this.generation) return;
+            throw error instanceof SpeechError
+                ? error
+                : new SpeechError("provider-failed", "Speech playback failed for Andres.");
+        }
     }
 }
 

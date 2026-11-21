@@ -2,6 +2,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
+import { ACTIVE_PROFILE_INDEX_KEY, PROFILE_KEY_PREFIX } from "@/services/storage/localProfileService";
 import { createBoardStore, type BoardState, type BoardStore } from "./useBoardStore";
 
 const BoardContext = createContext<BoardStore | null>(null);
@@ -18,7 +19,7 @@ export function BoardProvider({ children }: { children: React.ReactNode }) {
             .finally(() => setReady(true));
 
         const handleStorage = (event: StorageEvent) => {
-            if (event.key && !event.key.startsWith("wikahon-")) return;
+            if (event.key !== null && event.key !== ACTIVE_PROFILE_INDEX_KEY && !event.key.startsWith(PROFILE_KEY_PREFIX)) return;
             void store.getState().hydrateFromStorage().catch(() => undefined);
         };
         window.addEventListener("storage", handleStorage);

@@ -1,12 +1,12 @@
 "use client";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useBoardSelector } from "@/store/BoardProvider";
 import { clampGrid, inBounds, type GridConfig } from "@/lib/board";
-import { ttsService, type VoiceDescriptor } from "@/services/tts/ttsService";
+import { ANDRES_VOICE, isLanguageCompatible, ttsService, type VoiceDescriptor } from "@/services/tts/ttsService";
 import { exportProfilePackage, validateAndPrepareImport } from "@/services/storage/backupService";
-import { mediaRepository } from "@/services/storage/mediaRepository";
+import { discardPreparedMedia, mediaRepository } from "@/services/storage/mediaRepository";
 import { extractBoardData } from "@/store/useBoardStore";
-import type { FeatureFlags } from "@/models/boardData";
+import type { BoardData, FeatureFlags, SpeechProviderMode } from "@/models/boardData";
 import { cloudSyncService, type CloudUser } from "@/services/cloud/cloudSyncService";
 import type { ProfileRow } from "@/models/supabase/database.types";
 
@@ -19,10 +19,11 @@ export interface OfflineReadiness {
     compatibleVoicesCount: number;
 }
 
-export function useBoardSettingsViewModel(boardId: string) {
+export function useBoardSettingsViewModel(boardId: string, initialTab: SettingsTab = "speech") {
     const {
         boards,
         global,
+        globalMode,
         appearance,
         speech,
         access,
@@ -39,15 +40,13 @@ export function useBoardSettingsViewModel(boardId: string) {
         catalogOrder,
         experimentalData,
         sentence,
-        setGrid,
-        setAppearance,
+        applyBoardSettings,
         setSpeech,
         setAccess,
         setEditPin,
         setFeatureFlags,
         reflow,
         rollbackReflow,
-        updater,
         switchProfile,
         createProfile,
         renameProfile,
@@ -56,6 +55,7 @@ export function useBoardSettingsViewModel(boardId: string) {
     } = useBoardSelector(s => ({
         boards: s.boards,
         global: s.gridConfig,
+        globalMode: s.layoutMode ?? "manual",
         appearance: s.tileAppearance,
         speech: s.speechConfig,
         access: s.accessConfig,
@@ -72,15 +72,13 @@ export function useBoardSettingsViewModel(boardId: string) {
         catalogOrder: s.catalogOrder,
         experimentalData: s.experimentalData,
         sentence: s.sentence,
-        setGrid: s.setGridConfig,
-        setAppearance: s.setTileAppearance,
+        applyBoardSettings: s.applyBoardSettings,
         setSpeech: s.setSpeechConfig,
         setAccess: s.setAccessConfig,
         setEditPin: s.setEditPin,
         setFeatureFlags: s.setFeatureFlags,
         reflow: s.setGridConfigAndReflow,
         rollbackReflow: s.rollbackReflow,
-        updater: s.updateCatalog,
         switchProfile: s.switchProfile,
         createProfile: s.createProfile,
         renameProfile: s.renameProfile,
@@ -91,10 +89,13 @@ export function useBoardSettingsViewModel(boardId: string) {
     const [scope, setScope] = useState("global");
     const [selected, setSelected] = useState(boards[boardId] ? boardId : "home");
     const [draft, setDraft] = useState(global);
+    const [draftMode, setDraftMode] = useState<"manual" | "automatic">(globalMode);
+    const [draftAppearance, setDraftAppearance] = useState(appearance);
+    const [useGlobal, setUseGlobal] = useState(false);
     const [pin, setPin] = useState("");
     const [saved, setSaved] = useState(false);
-    const [tab, setTab] = useState<SettingsTab>("layout");
-    const [pinSaved, setPinSaved] = useState(false);
+    const [tab, setTab] = useState<SettingsTab>(initialTab);
+    const [pinStatus, setPinStatus] = useState<{ ok: boolean; message: string } | null>(null);
 
     const [voices, setVoices] = useState<VoiceDescriptor[]>([]);
     const [voicesLoaded, setVoicesLoaded] = useState(false);
@@ -126,13 +127,16 @@ export function useBoardSettingsViewModel(boardId: string) {
         const list = await refreshVoices();
         const media = await mediaRepository.listProfileMedia(activeProfileId);
         let appShellCached = false;
-        if (typeof caches !== "undefined") {
+        if (typeof caches !== "undefined" && "serviceWorker" in navigator) {
             try {
-                if (typeof caches.match === "function") {
-                    appShellCached = Boolean(await caches.match("/board"));
-                } else {
-                    const keys = await caches.keys();
-                    appShellCached = keys.some(k => k.startsWith("wikahon-shell-"));
+                const registration = await navigator.serviceWorker.getRegistration("/board");
+                const route = registration?.active?.state === "activated" && await caches.match("/board", { cacheName: "wikahon-shell-v4" });
+                if (route) {
+                    const html = await route.text();
+                    const assets = [...html.matchAll(/(?:src|href)=["']([^"']*\/_next\/static\/[^"']+\.(?:js|css)(?:\?[^"']*)?)["']/g)].map(match => match[1].replace(/&amp;/g, "&"));
+                    appShellCached = assets.length > 0 && (await Promise.all(
+                        assets.map(asset => caches.match(asset, { cacheName: "wikahon-shell-v4" })),
+                    )).every(Boolean);
                 }
             } catch {
                 appShellCached = false;
@@ -156,6 +160,14 @@ export function useBoardSettingsViewModel(boardId: string) {
         }
     }, [activeProfileId, refreshVoices, storageStatus]);
 
+    useEffect(() => {
+        if (tab !== "speech") return;
+        const refresh = () => { void refreshVoices(); };
+        refresh();
+        window.speechSynthesis?.addEventListener("voiceschanged", refresh);
+        return () => window.speechSynthesis?.removeEventListener("voiceschanged", refresh);
+    }, [tab, refreshVoices]);
+
     const affectedBoards = Object.values(boards).filter(b =>
         scope === "global" ? !b.gridOverride : b.id === selected,
     );
@@ -177,6 +189,7 @@ export function useBoardSettingsViewModel(boardId: string) {
             boards,
             catalogOrder,
             gridConfig: global,
+            layoutMode: globalMode,
             tileAppearance: appearance,
             speechConfig: speech,
             accessConfig: access,
@@ -184,6 +197,25 @@ export function useBoardSettingsViewModel(boardId: string) {
             experimentalData,
             sentence,
         });
+
+    const resetTileDimensions = () => {
+        setDraftAppearance(current => ({
+            ...current,
+            tileWidth: 50,
+            tileHeight: 50,
+        }));
+    };
+
+    const resetDrafts = (nextScope: string, nextSelected: string) => {
+        const board = boards[nextSelected];
+        setDraft(nextScope === "global" ? global : board?.gridOverride ?? global);
+        setDraftMode(
+            nextScope === "global" ? globalMode : board?.layoutModeOverride ?? globalMode,
+        );
+        setDraftAppearance(appearance);
+        setUseGlobal(false);
+        setSaved(false);
+    };
 
     const exportBackupJson = async (): Promise<string> => {
         const pkg = await exportProfilePackage(
@@ -202,13 +234,21 @@ export function useBoardSettingsViewModel(boardId: string) {
             setBackupStatus({ ok: false, message: res.error });
             return false;
         }
-        importProfileDocument(res.doc);
+        try { importProfileDocument(res.doc); } catch (error) {
+            await discardPreparedMedia(res.doc.localProfileId);
+            setBackupStatus({ ok: false, message: error instanceof Error ? error.message : "Could not save imported profile." });
+            return false;
+        }
         setBackupStatus({ ok: true, message: `Imported "${res.doc.name}" as a new local profile.` });
         return true;
     };
 
     const downloadBackupFile = async () => {
-        const json = await exportBackupJson();
+        let json: string;
+        try { json = await exportBackupJson(); } catch (error) {
+            setBackupStatus({ ok: false, message: error instanceof Error ? error.message : "Backup export failed." });
+            return;
+        }
         const blob = new Blob([json], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         try {
@@ -229,23 +269,25 @@ export function useBoardSettingsViewModel(boardId: string) {
     return {
         state: {
             tab,
-            pinSaved,
+            pinStatus,
             hasPin: Boolean(access.pinVerifier),
             boards,
             scope,
             selected,
             draft,
-            appearance,
+            draftMode,
+            appearance: draftAppearance,
             speech,
             access,
             featureFlags,
             pin,
             saved,
+            useGlobal,
             overflow,
             overflowDetails,
             canRollbackReflow: Boolean(preReflowSnapshot),
             preview: Array.from({ length: draft.rows * draft.cols }),
-            voices,
+            voices: voices.filter(voice => voice.provider === "local" && isLanguageCompatible(voice.lang, speech.languageTag || "fil-PH")),
             voicesLoaded,
             speechPreviewError,
             profiles,
@@ -267,32 +309,52 @@ export function useBoardSettingsViewModel(boardId: string) {
         actions: {
             setTab: (nextTab: SettingsTab) => {
                 setTab(nextTab);
-                if (nextTab === "speech") {
-                    void refreshVoices();
-                } else if (nextTab === "profiles") {
+                if (nextTab === "profiles") {
                     void refreshOfflineReadiness();
                 }
             },
             setScope: (value: string) => {
                 setScope(value);
-                setDraft(value === "global" ? global : boards[selected]?.gridOverride ?? global);
-                setSaved(false);
+                resetDrafts(value, selected);
             },
             selectBoard: (id: string) => {
                 setSelected(id);
-                setDraft(boards[id]?.gridOverride ?? global);
-                setSaved(false);
+                resetDrafts(scope, id);
             },
             setDraft: (grid: GridConfig) => {
-                setDraft(clampGrid(grid));
+                const nextGrid = clampGrid(grid);
+                setDraft(nextGrid);
+                resetTileDimensions();
+                setSaved(false);
+            },
+            setDraftMode: (mode: "manual" | "automatic") => {
+                if (mode !== draftMode) {
+                    resetTileDimensions();
+                }
+                setDraftMode(mode);
                 setSaved(false);
             },
             swapRowsCols: () => {
                 setDraft({ rows: draft.cols, cols: draft.rows });
+                resetTileDimensions();
+                setSaved(false);
+            },
+            setAppearance: (value: Partial<BoardData["tileAppearance"]> | BoardData["tileAppearance"]) => {
+                setDraftAppearance(current => ({ ...current, ...value }));
+                setSaved(false);
+            },
+            setUseGlobal: (value: boolean) => {
+                setUseGlobal(value);
                 setSaved(false);
             },
             apply: () => {
-                setGrid(draft, scope === "global" ? undefined : selected);
+                applyBoardSettings(
+                    draft,
+                    draftAppearance,
+                    draftMode,
+                    scope === "global" ? undefined : selected,
+                    scope !== "global" && useGlobal,
+                );
                 setSaved(true);
             },
             reflow: () => {
@@ -308,22 +370,28 @@ export function useBoardSettingsViewModel(boardId: string) {
                 }
             },
             useGlobal: () => {
-                updater(selected, { gridOverride: undefined });
-                setDraft(global);
-                setSaved(true);
+                setUseGlobal(true);
+                setSaved(false);
             },
-            setAppearance,
             setSpeech,
+            setSpeechProvider: (provider: SpeechProviderMode) => {
+                setSpeechPreviewError("");
+                setSpeech({
+                    provider,
+                    voiceId: provider === "cloud-puter" ? ANDRES_VOICE.id : null,
+                    languageTag: provider === "cloud-puter" ? ANDRES_VOICE.lang : "fil-PH",
+                });
+            },
             setAccess,
             setFeatureFlags: (patch: Partial<FeatureFlags>) => setFeatureFlags(patch),
             setPin: (value: string) => {
                 setPin(value);
-                setPinSaved(false);
+                setPinStatus(null);
             },
             savePin: async () => {
-                await setEditPin(pin.trim() || null);
-                setPin("");
-                setPinSaved(true);
+                const ok = await setEditPin(pin);
+                if (ok) setPin("");
+                setPinStatus({ ok, message: ok ? "Guardian PIN saved." : "Could not save the guardian PIN. Enter 4 to 12 digits and try again." });
             },
             refreshVoices,
             previewSpeech: async () => {
@@ -435,7 +503,11 @@ export function useBoardSettingsViewModel(boardId: string) {
                         setCloudStatus({ ok: false, message: res.error ?? "Download failed." });
                         return;
                     }
-                    importProfileDocument(res.doc);
+                    try { importProfileDocument(res.doc); } catch (error) {
+                        await discardPreparedMedia(res.doc.localProfileId);
+                        setCloudStatus({ ok: false, message: error instanceof Error ? error.message : "Could not save downloaded profile." });
+                        return;
+                    }
                     setCloudStatus({ ok: true, message: `Downloaded "${res.doc.name}" as a new local profile.` });
                 } finally {
                     setCloudBusy(false);

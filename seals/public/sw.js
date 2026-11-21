@@ -1,4 +1,4 @@
-const CACHE_NAME = "wikahon-shell-v3";
+const CACHE_NAME = "wikahon-shell-v4";
 
 const CORE_ROUTES = [
     "/",
@@ -37,7 +37,19 @@ const STATIC_SYMBOLS = [
 
 self.addEventListener("install", event => {
     event.waitUntil(
-        caches.open(CACHE_NAME).then(cache => cache.addAll([...CORE_ROUTES, ...STATIC_SYMBOLS])),
+        caches.open(CACHE_NAME).then(async cache => {
+            await cache.addAll([...CORE_ROUTES, ...STATIC_SYMBOLS]);
+            const assets = new Set();
+            for (const route of CORE_ROUTES) {
+                const response = await cache.match(route);
+                const html = await response.text();
+                for (const match of html.matchAll(/(?:src|href)=["']([^"']*\/_next\/static\/[^"']+\.(?:js|css)(?:\?[^"']*)?)["']/g)) {
+                    assets.add(match[1].replace(/&amp;/g, "&"));
+                }
+            }
+            if (!assets.size) throw new Error("No startup assets found in cached routes");
+            await cache.addAll([...assets]);
+        }),
     );
 });
 

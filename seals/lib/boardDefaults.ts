@@ -8,7 +8,6 @@ import {
     type Tile,
     type CatalogBoard,
     type ColorKey,
-    type WordTile,
     type GridConfig,
     type BoardPage,
     type CellKey,
@@ -56,6 +55,7 @@ export function initialData(): BoardData {
         boards,
         catalogOrder: [...CATEGORY_IDS],
         gridConfig: { ...DEFAULT_GRID },
+        layoutMode: "manual",
         tileAppearance: {
             labelPosition: "bottom",
             fontScale: "md",
@@ -63,14 +63,16 @@ export function initialData(): BoardData {
             showIcons: true,
             gridGap: "normal",
             colorMode: "catalog",
+            tileWidth: 50,
+            tileHeight: 50,
         },
         speechConfig: {
             volume: 1,
             speakOnTap: true,
             autoClear: "off",
-            provider: "local",
-            voiceId: null,
-            languageTag: "fil-PH",
+            provider: "cloud-puter",
+            voiceId: "Andres",
+            languageTag: "es-MX",
             rate: 1,
         },
         accessConfig: {
@@ -84,41 +86,6 @@ export function initialData(): BoardData {
         featureFlags: { ...DEFAULT_FEATURE_FLAGS },
         sentence: [],
     };
-}
-
-export function migrateV1(value: unknown): BoardData {
-    const data = initialData();
-    const old = value as {
-        dictionary?: Record<string, (WordTile | null)[]>;
-        homeGrid?: {
-            slotIndex: number;
-            tile: WordTile | null;
-        }[];
-    };
-    if (!old || typeof old !== "object") return data;
-    const convert = (word: WordTile) => {
-        data.tiles[word.id] = { ...word, kind: "word" };
-        return { tileId: word.id };
-    };
-    for (const id of CATEGORY_IDS) {
-        if (Array.isArray(old.dictionary?.[id])) {
-            data.boards[id].pages = [{ cells: {} }];
-            old.dictionary![id].forEach((word, i) => {
-                if (word) {
-                    data.boards[id].pages[0].cells[cellKey(Math.floor(i / 4), i % 4)] = convert(word);
-                }
-            });
-        }
-    }
-    if (Array.isArray(old.homeGrid)) {
-        data.boards.home.pages = [{ cells: {} }];
-        old.homeGrid.forEach(({ slotIndex: i, tile }) => {
-            if (tile) {
-                data.boards.home.pages[0].cells[cellKey(Math.floor(i / 4), i % 4)] = convert(tile);
-            }
-        });
-    }
-    return data;
 }
 
 const VALID_COLOR_KEYS: ReadonlySet<string> = new Set<ColorKey>([
@@ -202,6 +169,9 @@ function sanitizeBoards(rawBoards: Record<string, unknown>, fallbackGrid: GridCo
             ...(isPlainObject(rawBoard.gridOverride)
                 ? { gridOverride: sanitizeGrid(rawBoard.gridOverride, fallbackGrid) }
                 : {}),
+            ...(rawBoard.layoutModeOverride === "manual" || rawBoard.layoutModeOverride === "automatic"
+                ? { layoutModeOverride: rawBoard.layoutModeOverride }
+                : {}),
             pages: sanitizePages(rawBoard.pages),
         };
     }
@@ -229,12 +199,17 @@ function clonePlainObject<T>(value: unknown): Partial<T> {
     return isPlainObject(value) ? (structuredClone(value) as Partial<T>) : {};
 }
 
-export function upgradeV2ToV3BoardData(v2State: unknown): BoardData | null {
-    if (!isPlainObject(v2State)) return null;
-    if (!isPlainObject(v2State.tiles) || !isPlainObject(v2State.boards)) return null;
+function currentTileDimension(value: unknown): number {
+    return typeof value === "number" && Number.isFinite(value) ? Math.max(1, Math.min(100, Math.round(value))) : 50;
+}
+
+export function sanitizeBoardData(raw: unknown): BoardData | null {
+    if (!isPlainObject(raw)) return null;
+    if (!isPlainObject(raw.tiles) || !isPlainObject(raw.boards)) return null;
 
     const defaults = initialData();
-    const rawAccess = isPlainObject(v2State.accessConfig) ? v2State.accessConfig : {};
+    const rawAccess = isPlainObject(raw.accessConfig) ? raw.accessConfig : {};
+    const rawAppearance = clonePlainObject<BoardData["tileAppearance"]>(raw.tileAppearance);
     const rawPinVerifier = rawAccess.pinVerifier;
     const pinVerifier =
         isPlainObject(rawPinVerifier) &&
@@ -244,25 +219,28 @@ export function upgradeV2ToV3BoardData(v2State: unknown): BoardData | null {
             : null;
 
     return {
-        tiles: sanitizeTiles(v2State.tiles),
-        boards: sanitizeBoards(v2State.boards, defaults.gridConfig),
-        catalogOrder: Array.isArray(v2State.catalogOrder)
-            ? v2State.catalogOrder.filter((id): id is string => typeof id === "string")
+        tiles: sanitizeTiles(raw.tiles),
+        boards: sanitizeBoards(raw.boards, defaults.gridConfig),
+        catalogOrder: Array.isArray(raw.catalogOrder)
+            ? raw.catalogOrder.filter((id): id is string => typeof id === "string")
             : defaults.catalogOrder,
-        gridConfig: isPlainObject(v2State.gridConfig)
-            ? sanitizeGrid(v2State.gridConfig, defaults.gridConfig)
+        gridConfig: isPlainObject(raw.gridConfig)
+            ? sanitizeGrid(raw.gridConfig, defaults.gridConfig)
             : defaults.gridConfig,
+        layoutMode: raw.layoutMode === "automatic" ? "automatic" : "manual",
         tileAppearance: {
             ...defaults.tileAppearance,
-            ...clonePlainObject<BoardData["tileAppearance"]>(v2State.tileAppearance),
+            ...rawAppearance,
+            tileWidth: currentTileDimension(rawAppearance.tileWidth),
+            tileHeight: currentTileDimension(rawAppearance.tileHeight),
         },
         speechConfig: {
             ...defaults.speechConfig,
-            ...clonePlainObject<BoardData["speechConfig"]>(v2State.speechConfig),
+            ...clonePlainObject<BoardData["speechConfig"]>(raw.speechConfig),
         },
         accessConfig: {
             ...defaults.accessConfig,
-            ...clonePlainObject<BoardData["accessConfig"]>(v2State.accessConfig),
+            ...clonePlainObject<BoardData["accessConfig"]>(raw.accessConfig),
             editPin: null,
             pinVerifier,
             longPressToEdit:
@@ -275,19 +253,15 @@ export function upgradeV2ToV3BoardData(v2State: unknown): BoardData | null {
         },
         featureFlags: {
             ...DEFAULT_FEATURE_FLAGS,
-            ...clonePlainObject<BoardData["featureFlags"]>(v2State.featureFlags),
+            ...clonePlainObject<BoardData["featureFlags"]>(raw.featureFlags),
         },
-        ...(isPlainObject(v2State.experimentalData)
-            ? { experimentalData: structuredClone(v2State.experimentalData) as BoardData["experimentalData"] }
+        ...(isPlainObject(raw.experimentalData)
+            ? { experimentalData: structuredClone(raw.experimentalData) as BoardData["experimentalData"] }
             : {}),
-        sentence: Array.isArray(v2State.sentence)
-            ? v2State.sentence
+        sentence: Array.isArray(raw.sentence)
+            ? raw.sentence
                   .filter(isPlainObject)
                   .map(token => sanitizeRecordMediaId(token) as unknown as BoardData["sentence"][number])
             : [],
     };
-}
-
-export function sanitizeBoardData(raw: unknown): BoardData | null {
-    return upgradeV2ToV3BoardData(raw);
 }

@@ -2,7 +2,6 @@ import type { ColorKey, WordClass } from "@/lib/board";
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 export type ProfileMemberRole = "editor" | "viewer";
-type Timestamps = { created_at: string; updated_at: string };
 type Table<Row, Required extends keyof Row, Relations extends Relationship[] = []> = {
     Row: Row;
     Insert: Pick<Row, Required> & Partial<Omit<Row, Required>>;
@@ -24,13 +23,13 @@ type ProfileRelation<Name extends string, One extends boolean = false> = {
     referencedColumns: ["id"];
 };
 
-export type ProfileRow = Timestamps & { id: string; owner_id: string; name: string; revision: number };
-export type ProfileMembershipRow = Timestamps & {
+export type ProfileRow = { id: string; owner_id: string; name: string; revision: number };
+export type ProfileMembershipRow = {
     profile_id: string;
     user_id: string;
     role: ProfileMemberRole;
 };
-export type BoardRow = Timestamps & {
+export type BoardRow = {
     profile_id: string;
     id: string;
     name: string;
@@ -41,7 +40,7 @@ export type BoardRow = Timestamps & {
     grid_override: Json | null;
     pages: Json;
 };
-export type TileRow = Timestamps & {
+export type TileRow = {
     profile_id: string;
     id: string;
     kind: "word" | "folder";
@@ -57,7 +56,7 @@ export type TileRow = Timestamps & {
     word_class: WordClass | null;
     is_custom: boolean;
 };
-export type WordRow = Timestamps & {
+export type WordRow = {
     profile_id: string;
     id: string;
     label: string;
@@ -71,7 +70,7 @@ export type WordRow = Timestamps & {
     is_custom: boolean;
     is_quick_phrase: boolean;
 };
-export type ProfileSettingsRow = Timestamps & {
+export type ProfileSettingsRow = {
     profile_id: string;
     catalog_order: string[];
     grid_config: Json;
@@ -81,7 +80,7 @@ export type ProfileSettingsRow = Timestamps & {
     feature_flags: Json;
 };
 
-/** Schema contract for 20261117000100_board_models.sql + 20261117000200_w07_revisions_media_and_flags.sql + 20261118000100_words_schema.sql */
+/** Schema contract for 20261117000100_board_models.sql + 20261117000200_w07_revisions_media_and_flags.sql + 20261118000100_words_schema.sql (normalized to omit Timestamps and publish_profile_snapshot) */
 export type Database = {
     public: {
         Tables: {
@@ -138,18 +137,7 @@ export type Database = {
             >;
         };
         Views: { [_ in never]: never };
-        Functions: {
-            publish_profile_snapshot: {
-                Args: {
-                    p_profile_id: string;
-                    p_expected_revision: number | null;
-                    p_boards: Json;
-                    p_tiles: Json;
-                    p_settings: Json;
-                };
-                Returns: number;
-            };
-        };
+        Functions: { [_ in never]: never };
         Enums: {
             profile_member_role: ProfileMemberRole;
             tile_kind: "word" | "folder";

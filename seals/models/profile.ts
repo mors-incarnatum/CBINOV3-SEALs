@@ -9,7 +9,6 @@ export interface LocalProfileDocument {
     cloudProfileId?: string | null;
     cloudRevision?: number | null;
     dirty?: boolean;
-    lastSavedAt?: string | null;
     boardData: BoardData;
 }
 

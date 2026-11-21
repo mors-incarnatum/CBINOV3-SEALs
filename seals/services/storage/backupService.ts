@@ -5,6 +5,7 @@ import { PROFILE_SCHEMA_VERSION, type LocalProfileDocument } from "@/models/prof
 import {
     ALLOWED_PHOTO_TYPES,
     computeBlobChecksum,
+    discardPreparedMedia,
     mediaRepository,
     readBlobArrayBuffer,
     type IMediaRepository,
@@ -25,7 +26,6 @@ export interface BackupMediaPayload extends BackupMediaManifestEntry {
 export interface ProfileBackupPackage {
     format: "wikahon-profile-backup-v1";
     schemaVersion: typeof PROFILE_SCHEMA_VERSION;
-    exportedAt: string;
     profileName: string;
     boardData: BoardData;
     manifest: BackupMediaManifestEntry[];
@@ -61,6 +61,7 @@ export async function exportProfilePackage(
         boards: boardData.boards,
         catalogOrder: boardData.catalogOrder,
         gridConfig: boardData.gridConfig,
+        layoutMode: boardData.layoutMode,
         tileAppearance: boardData.tileAppearance,
         speechConfig: boardData.speechConfig,
         accessConfig: boardData.accessConfig,
@@ -84,7 +85,7 @@ export async function exportProfilePackage(
     const media: BackupMediaPayload[] = [];
     for (const mediaId of referencedIds) {
         const record = await repo.loadMedia(profileId, mediaId);
-        if (!record) continue;
+        if (!record) throw new Error(`Cannot export: missing photo ${mediaId}.`);
         const buf = await readBlobArrayBuffer(record.blob);
         const checksum = record.checksum || (await computeBlobChecksum(record.blob));
         const entry: BackupMediaManifestEntry = {
@@ -104,7 +105,6 @@ export async function exportProfilePackage(
     return {
         format: "wikahon-profile-backup-v1",
         schemaVersion: PROFILE_SCHEMA_VERSION,
-        exportedAt: new Date().toISOString(),
         profileName,
         boardData: sanitized,
         manifest,
@@ -170,22 +170,36 @@ export async function validateAndPrepareImport(
     }
 
     for (const expected of pkg.manifest) {
+        if (!expected || !isValidMediaId(expected.mediaId)) {
+            return { ok: false, error: "Backup contains an invalid manifest entry." };
+        }
         if (!mediaMap.has(expected.mediaId)) {
             return { ok: false, error: `Missing media ${expected.mediaId} listed in manifest.` };
         }
     }
 
+    const manifestIds = new Set(pkg.manifest.map(item => item.mediaId));
+    const referencedIds = new Set<string>();
+    for (const tile of Object.values(sanitizedBoard.tiles)) if (tile.mediaId) referencedIds.add(tile.mediaId);
+    for (const token of sanitizedBoard.sentence) if (token.mediaId) referencedIds.add(token.mediaId);
+    for (const id of referencedIds) {
+        if (!manifestIds.has(id) || !mediaMap.has(id)) return { ok: false, error: `Backup is missing photo ${id}.` };
+    }
+
     const newProfileId = `profile-${uid()}`;
-    for (const [mediaId, { blob, entry }] of mediaMap) {
-        const res = await repo.saveMedia(newProfileId, mediaId, blob, {
-            mimeType: entry.mimeType,
-            width: entry.width,
-            height: entry.height,
-            checksum: entry.checksum,
-        });
-        if (!res.ok) {
-            return { ok: false, error: res.error ?? "Failed to store imported media." };
+    try {
+        for (const [mediaId, { blob, entry }] of mediaMap) {
+            const res = await repo.saveMedia(newProfileId, mediaId, blob, {
+                mimeType: entry.mimeType,
+                width: entry.width,
+                height: entry.height,
+                checksum: entry.checksum,
+            });
+            if (!res.ok) throw new Error(res.error ?? `Failed to store photo ${mediaId}.`);
         }
+    } catch (error) {
+        await discardPreparedMedia(newProfileId, repo);
+        return { ok: false, error: error instanceof Error ? error.message : "Failed to store imported media." };
     }
 
     sanitizedBoard.accessConfig.editPin = null;
@@ -196,11 +210,10 @@ export async function validateAndPrepareImport(
         doc: {
             schemaVersion: PROFILE_SCHEMA_VERSION,
             localProfileId: newProfileId,
-            name: `${(pkg.profileName || "Imported Profile").trim()} (Imported)`,
+            name: `${(typeof pkg.profileName === "string" && pkg.profileName.trim()) || "Imported Profile"} (Imported)`,
             cloudProfileId: null,
             cloudRevision: null,
             dirty: false,
-            lastSavedAt: new Date().toISOString(),
             boardData: sanitizedBoard,
         },
     };

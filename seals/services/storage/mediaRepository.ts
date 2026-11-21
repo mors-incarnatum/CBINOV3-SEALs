@@ -7,7 +7,6 @@ export interface StoredMediaRecord {
     width: number;
     height: number;
     checksum: string;
-    createdAt: string;
 }
 
 export interface MediaSaveResult {
@@ -30,6 +29,11 @@ export interface IMediaRepository {
     loadMedia(profileId: string, mediaId: string): Promise<StoredMediaRecord | null>;
     removeMedia(profileId: string, mediaId: string): Promise<void>;
     listProfileMedia(profileId: string): Promise<StoredMediaRecord[]>;
+}
+
+export async function discardPreparedMedia(profileId: string, repo: IMediaRepository = mediaRepository) {
+    const records = await repo.listProfileMedia(profileId);
+    await Promise.all(records.map(record => repo.removeMedia(profileId, record.mediaId)));
 }
 
 const DB_NAME = "wikahon-media-v1";
@@ -105,13 +109,13 @@ export class IndexedDbMediaRepository implements IMediaRepository {
                 width: meta.width,
                 height: meta.height,
                 checksum,
-                createdAt: new Date().toISOString(),
             };
             await new Promise<void>((resolve, reject) => {
                 const tx = db.transaction(STORE_NAME, "readwrite");
                 tx.objectStore(STORE_NAME).put(record);
                 tx.oncomplete = () => resolve();
                 tx.onerror = () => reject(tx.error ?? new Error("Failed to save media."));
+                tx.onabort = () => reject(tx.error ?? new Error("Saving media was interrupted."));
             });
             db.close();
             return {
@@ -157,7 +161,6 @@ export class IndexedDbMediaRepository implements IMediaRepository {
                         width: raw.width,
                         height: raw.height,
                         checksum: raw.checksum,
-                        createdAt: raw.createdAt,
                     });
                 };
                 req.onerror = () => reject(req.error ?? new Error("Failed to load media."));

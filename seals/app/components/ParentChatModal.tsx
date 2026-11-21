@@ -1,21 +1,32 @@
 "use client";
 import { useEffect, useRef } from "react";
+import type { ChatConnectionStatus } from "@/services/chat/chatSocketService";
 import { useParentChatViewModel } from "@/viewmodels/useParentChatViewModel";
-import Modal from "./Modal";
+
+const CONNECTION_STATUS_META: Record<
+    ChatConnectionStatus,
+    { label: string; dotClass: string }
+> = {
+    connected: { label: "Live Socket", dotClass: "bg-emerald-400" },
+    connecting: { label: "Connecting…", dotClass: "bg-amber-300 animate-pulse" },
+    error: { label: "Offline", dotClass: "bg-rose-400" },
+    disconnected: { label: "Offline", dotClass: "bg-rose-400" },
+    unconfigured: { label: "Local Mode", dotClass: "bg-slate-300" },
+};
 
 export default function ParentChatModal({ onClose }: { onClose: () => void }) {
     const { state: s, actions: a } = useParentChatViewModel();
     const bottomRef = useRef<HTMLDivElement>(null);
+    const statusMeta = CONNECTION_STATUS_META[s.connectionStatus];
 
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [s.messages.length]);
 
     return (
-        <Modal
-            label="Parent-child chat prototype"
-            onClose={onClose}
-            className="m-auto w-[min(350px,calc(100vw-24px))] h-[min(480px,calc(100dvh-24px))] rounded-2xl border border-slate-300 bg-white p-0 shadow-2xl overflow-hidden open:flex flex-col"
+        <section
+            aria-label="Parent-child chat"
+            className="flex-1 min-h-0 w-full rounded-xl border border-slate-300 bg-white p-0 shadow-xs overflow-hidden flex flex-col"
         >
             <div className="bg-[#0369a1] text-white px-3.5 py-2.5 flex items-center justify-between gap-2 shrink-0">
                 <div className="flex items-center gap-2.5 min-w-0">
@@ -26,29 +37,48 @@ export default function ParentChatModal({ onClose }: { onClose: () => void }) {
                         <h2 className="text-sm font-bold leading-tight truncate">
                             Parent–child chat
                         </h2>
-                        <p className="text-[11px] text-sky-100 leading-tight truncate">
-                            Local Mock · {s.senderRole === "guardian" ? "Sending as Guardian" : "Sending as Child"}
+                        <p className="text-[11px] text-sky-100 leading-tight truncate flex items-center gap-1.5">
+                            <span
+                                aria-hidden="true"
+                                className={`inline-block w-2 h-2 rounded-full shrink-0 ${statusMeta.dotClass}`}
+                            />
+                            <span className="truncate">
+                                {statusMeta.label} · {s.senderRole === "guardian" ? "Sending as Guardian" : "Sending as Child"}
+                            </span>
                         </p>
                     </div>
                 </div>
-                <button
-                    type="button"
-                    onClick={onClose}
-                    aria-label="Close chat"
-                    className="w-7 h-7 rounded-full hover:bg-white/15 flex items-center justify-center text-white/90 hover:text-white transition-colors shrink-0 cursor-pointer"
-                >
-                    ✕
-                </button>
+                <div className="flex items-center gap-1.5 shrink-0">
+                    {(s.connectionStatus === "error" || s.connectionStatus === "disconnected") && (
+                        <button
+                            type="button"
+                            onClick={a.reconnect}
+                            className="px-2 py-1 rounded-full bg-white/15 hover:bg-white/25 text-[11px] font-semibold text-white transition-colors cursor-pointer"
+                        >
+                            Reconnect
+                        </button>
+                    )}
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        aria-label="Close chat"
+                        className="w-7 h-7 rounded-full hover:bg-white/15 flex items-center justify-center text-white/90 hover:text-white transition-colors shrink-0 cursor-pointer"
+                    >
+                        ✕
+                    </button>
+                </div>
             </div>
 
             <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2 bg-slate-50">
                 <p className="text-[11px] text-slate-500 text-center bg-slate-200/70 rounded-lg px-2.5 py-1.5">
-                    Local mock prototype. Composing in the AAC board never sends automatically—tap Send explicitly.
+                    {s.connectionStatus === "unconfigured"
+                        ? "Local mode (Supabase is not configured). Composing in the AAC board never sends automatically—tap Send explicitly."
+                        : "Real-time socket chat. Composing in the AAC board never sends automatically—tap Send explicitly."}
                 </p>
 
                 {s.messages.length === 0 ? (
                     <p className="text-xs text-slate-400 text-center py-8">
-                        No local messages yet.
+                        No messages yet.
                     </p>
                 ) : (
                     s.messages.map(m => {
@@ -124,6 +154,6 @@ export default function ParentChatModal({ onClose }: { onClose: () => void }) {
                     </svg>
                 </button>
             </div>
-        </Modal>
+        </section>
     );
 }

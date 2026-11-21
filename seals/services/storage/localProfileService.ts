@@ -1,6 +1,5 @@
 import { uid } from "@/lib/board";
-import { initialData, migrateV1, sanitizeBoardData, upgradeV2ToV3BoardData } from "@/lib/boardDefaults";
-import { createPinVerifier } from "@/lib/pinVerifier";
+import { initialData, sanitizeBoardData } from "@/lib/boardDefaults";
 import {
     PROFILE_SCHEMA_VERSION,
     type ActiveProfileIndex,
@@ -12,8 +11,6 @@ import type { BoardData } from "@/models/boardData";
 
 export const ACTIVE_PROFILE_INDEX_KEY = "wikahon-active-profile-v3";
 export const PROFILE_KEY_PREFIX = "wikahon-board-v3:";
-export const LEGACY_V2_KEY = "wikahon-board-v2";
-export const LEGACY_V1_KEY = "wikahon-board-v1";
 
 export function profileStorageKey(localProfileId: string): string {
     return `${PROFILE_KEY_PREFIX}${localProfileId}`;
@@ -59,29 +56,14 @@ function safeParseJson(raw: string): { ok: true; value: unknown } | { ok: false 
     }
 }
 
-async function migratePinIfNeeded(boardData: BoardData): Promise<BoardData> {
-    const legacyPin = boardData.accessConfig.editPin;
-    if (typeof legacyPin === "string" && legacyPin.trim().length > 0 && !boardData.accessConfig.pinVerifier) {
-        const verifier = await createPinVerifier(legacyPin.trim());
-        return {
-            ...boardData,
-            accessConfig: {
-                ...boardData.accessConfig,
-                editPin: null,
-                pinVerifier: verifier,
-            },
-        };
-    }
-    if (boardData.accessConfig.editPin !== null) {
-        return {
-            ...boardData,
-            accessConfig: {
-                ...boardData.accessConfig,
-                editPin: null,
-            },
-        };
-    }
-    return boardData;
+// Another tab may have upgraded this key since the active board was loaded.
+function savedWithNewerVersion(storage: StorageLike, key: string): boolean {
+    const raw = storage.getItem(key);
+    if (raw === null) return false;
+    const parsed = safeParseJson(raw);
+    return parsed.ok && typeof parsed.value === "object" && parsed.value !== null
+        && "schemaVersion" in parsed.value && typeof parsed.value.schemaVersion === "number"
+        && parsed.value.schemaVersion > PROFILE_SCHEMA_VERSION;
 }
 
 export class LocalProfileService {
@@ -105,13 +87,16 @@ export class LocalProfileService {
             };
         }
         try {
+            const key = profileStorageKey(doc.localProfileId);
+            if (savedWithNewerVersion(storage, key)) {
+                return { ok: false, status: "unsupported-version", errorMessage: "This profile was saved by a newer version. Changes are kept in memory." };
+            }
             const payload = JSON.stringify({
                 ...doc,
                 schemaVersion: PROFILE_SCHEMA_VERSION,
                 dirty: false,
-                lastSavedAt: new Date().toISOString(),
             });
-            storage.setItem(profileStorageKey(doc.localProfileId), payload);
+            storage.setItem(key, payload);
             return { ok: true, status: "ok" };
         } catch (error) {
             const classified = classifyWriteError(error);
@@ -125,6 +110,9 @@ export class LocalProfileService {
             return { ok: false, status: "unavailable", errorMessage: "Browser storage is unavailable." };
         }
         try {
+            if (savedWithNewerVersion(storage, ACTIVE_PROFILE_INDEX_KEY)) {
+                return { ok: false, status: "unsupported-version", errorMessage: "The saved profile list requires a newer version." };
+            }
             storage.setItem(ACTIVE_PROFILE_INDEX_KEY, JSON.stringify(index));
             return { ok: true, status: "ok" };
         } catch (error) {
@@ -180,7 +168,6 @@ export class LocalProfileService {
             cloudProfileId: null,
             cloudRevision: null,
             dirty: false,
-            lastSavedAt: null,
             boardData: initialData(),
         };
         const fallbackIndex: ActiveProfileIndex = {
@@ -234,49 +221,22 @@ export class LocalProfileService {
             };
         }
 
-        // Migrate from v2 first, then v1 fallback. Never pass v2 through migrateV1.
-        let migratedBoard: BoardData | null = null;
-        const rawV2 = storage.getItem(LEGACY_V2_KEY);
-        if (rawV2) {
-            const parsedV2 = safeParseJson(rawV2);
-            if (!parsedV2.ok || !parsedV2.value || typeof parsedV2.value !== "object") {
-                return {
-                    index: fallbackIndex,
-                    activeDocument: fallbackDoc,
-                    status: "corrupt",
-                    errorMessage: "Legacy v2 board data is corrupted. Preserved without overwriting.",
-                };
+        // A failed index write can leave a complete profile at the default key.
+        if (storage.getItem(profileStorageKey(fallbackDoc.localProfileId)) !== null) {
+            const loaded = this.loadProfileDocument(fallbackDoc.localProfileId);
+            if (!loaded.doc) {
+                return { ...loaded, index: fallbackIndex, activeDocument: fallbackDoc };
             }
-            const v2Record = parsedV2.value as Record<string, unknown>;
-            const v2Version = typeof v2Record.version === "number" ? v2Record.version : 2;
-            if (v2Version > PROFILE_SCHEMA_VERSION) {
-                return {
-                    index: fallbackIndex,
-                    activeDocument: fallbackDoc,
-                    status: "unsupported-version",
-                    errorMessage: `Unsupported board version ${v2Version}. Existing data is preserved.`,
-                    unsupportedPayload: v2Record,
-                };
-            }
-            migratedBoard = upgradeV2ToV3BoardData(v2Record.state ?? v2Record);
-        } else {
-            const rawV1 = storage.getItem(LEGACY_V1_KEY);
-            if (rawV1) {
-                const parsedV1 = safeParseJson(rawV1);
-                if (!parsedV1.ok || !parsedV1.value || typeof parsedV1.value !== "object") {
-                    return {
-                        index: fallbackIndex,
-                        activeDocument: fallbackDoc,
-                        status: "corrupt",
-                        errorMessage: "Legacy v1 board data is corrupted. Preserved without overwriting.",
-                    };
-                }
-                const v1Record = parsedV1.value as Record<string, unknown>;
-                migratedBoard = migrateV1(v1Record.state ?? v1Record);
-            }
+            fallbackIndex.profiles[0] = {
+                localProfileId: loaded.doc.localProfileId,
+                name: loaded.doc.name,
+                cloudProfileId: loaded.doc.cloudProfileId,
+            };
+            const saved = this.saveActiveIndex(fallbackIndex);
+            return { index: fallbackIndex, activeDocument: loaded.doc, status: saved.status, errorMessage: saved.errorMessage };
         }
 
-        const boardData = await migratePinIfNeeded(migratedBoard ?? initialData());
+        const boardData = initialData();
         const localProfileId = fallbackDoc.localProfileId;
         const doc: LocalProfileDocument = {
             schemaVersion: PROFILE_SCHEMA_VERSION,
@@ -285,7 +245,6 @@ export class LocalProfileService {
             cloudProfileId: null,
             cloudRevision: null,
             dirty: false,
-            lastSavedAt: new Date().toISOString(),
             boardData,
         };
         const index: ActiveProfileIndex = {
@@ -324,7 +283,6 @@ export class LocalProfileService {
             cloudProfileId: null,
             cloudRevision: null,
             dirty: false,
-            lastSavedAt: new Date().toISOString(),
             boardData: boardData ?? initialData(),
         };
     }

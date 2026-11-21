@@ -29,19 +29,13 @@ export default function BoardShell({ children }: { children: React.ReactNode }) 
                     onKeyDown={vm.edit.actions.touchActivity}
                 >
                     <header className="board-header">
-                        <Link href="/board" className="brand">
+                        <Link href="/board" className="brand" onClick={() => vm.actions.setPanel(null)}>
                             <b>W</b> WiKahon
                         </Link>
                         <SentenceStrip />
                         <div className="header-tools">
                             {vm.state.isGuardian ? (
                                 <>
-                                    <span
-                                        className="profile-badge"
-                                        aria-label={`Active profile: ${vm.state.activeProfileName}`}
-                                    >
-                                        Profile: {vm.state.activeProfileName}
-                                    </span>
                                     <span
                                         className="profile-badge"
                                         aria-label={`Signed in guardian: ${vm.state.currentUser.name}`}
@@ -75,7 +69,11 @@ export default function BoardShell({ children }: { children: React.ReactNode }) 
                                 </button>
                             )}
                             {vm.state.featureFlags?.parentChildChat && (
-                                <button type="button" onClick={() => vm.actions.setPanel("chat")}>
+                                <button
+                                    type="button"
+                                    aria-pressed={vm.state.isChatOpen}
+                                    onClick={vm.actions.toggleChat}
+                                >
                                     💬 Chat
                                 </button>
                             )}
@@ -152,18 +150,52 @@ export default function BoardShell({ children }: { children: React.ReactNode }) 
                     )}
 
                     <main
-                        className="board-main"
+                        className={vm.state.isChatOpen ? "board-main !pb-0" : "board-main"}
                         aria-label={
-                            vm.state.wheelEnabled
-                                ? "Communication board. Right-click or press Shift F10 for catalogs."
-                                : "Communication board."
+                            vm.state.isChatOpen
+                                ? "Parent-child chat."
+                                : vm.state.wheelEnabled
+                                  ? "Communication board. Right-click or press Shift F10 for catalogs."
+                                  : "Communication board."
                         }
                         tabIndex={0}
                         onContextMenu={vm.actions.onContextMenu}
                         onKeyDown={vm.actions.onKeyDown}
                     >
-                        {children}
+                        {vm.state.isChatOpen ? (
+                            <ParentChatModal onClose={() => vm.actions.setPanel(null)} />
+                        ) : (
+                            children
+                        )}
                     </main>
+
+                    {vm.state.isGuardian && !vm.state.isChatOpen && (
+                        <button
+                            type="button"
+                            className="board-layout-control"
+                            aria-label="Configure board layout"
+                            title="Configure board layout"
+                            onClick={() => vm.actions.setPanel("layout")}
+                        >
+                            <svg
+                                viewBox="0 0 24 24"
+                                width="22"
+                                height="22"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                            >
+                                <rect x="3" y="3" width="18" height="18" rx="2" />
+                                <rect x="6" y="6" width="5" height="5" rx="1" />
+                                <rect x="13" y="6" width="5" height="5" rx="1" />
+                                <rect x="6" y="13" width="5" height="5" rx="1" />
+                                <rect x="13" y="13" width="5" height="5" rx="1" />
+                            </svg>
+                        </button>
+                    )}
 
                     {vm.state.wheelEnabled && vm.state.wheel && (
                         <CategoryWheel
@@ -175,14 +207,18 @@ export default function BoardShell({ children }: { children: React.ReactNode }) 
                     {vm.state.isGuardian && vm.state.panel === "settings" && (
                         <BoardSettings boardId={vm.state.boardId} onClose={() => vm.actions.setPanel(null)} />
                     )}
+                    {vm.state.isGuardian && vm.state.panel === "layout" && (
+                        <BoardSettings
+                            boardId={vm.state.boardId}
+                            onClose={() => vm.actions.setPanel(null)}
+                            initialTab="layout"
+                        />
+                    )}
                     {vm.state.isGuardian && vm.state.panel === "catalogs" && (
                         <CatalogManager onClose={() => vm.actions.setPanel(null)} />
                     )}
                     {vm.state.panel === "scribble" && vm.state.featureFlags?.scribblePractice && (
                         <ScribblePracticeModal onClose={() => vm.actions.setPanel(null)} />
-                    )}
-                    {vm.state.panel === "chat" && vm.state.featureFlags?.parentChildChat && (
-                        <ParentChatModal onClose={() => vm.actions.setPanel(null)} />
                     )}
                     {vm.state.isGuardian && vm.edit.state.pinDialog && (
                         <Modal

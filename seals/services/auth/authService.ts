@@ -59,15 +59,13 @@ export class AuthService {
                 !parsed ||
                 typeof parsed !== "object" ||
                 !isValidUser(parsed.user) ||
-                typeof parsed.username !== "string" ||
-                typeof parsed.loggedInAt !== "string"
+                typeof parsed.username !== "string"
             ) {
                 return null;
             }
             return {
                 user: parsed.user,
                 username: parsed.username,
-                loggedInAt: parsed.loggedInAt,
             };
         } catch {
             return null;
@@ -105,7 +103,6 @@ export class AuthService {
         const session: AuthSession = {
             user: { ...account.user },
             username: account.username,
-            loggedInAt: new Date().toISOString(),
         };
         this.saveSession(session);
         return { ok: true, session, account };
@@ -121,7 +118,6 @@ export class AuthService {
         const session: AuthSession = {
             user: { ...account.user },
             username: account.username,
-            loggedInAt: new Date().toISOString(),
         };
         this.saveSession(session);
         return { ok: true, session, account };

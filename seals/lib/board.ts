@@ -1,3 +1,5 @@
+import type { Word } from "@/models/word";
+
 export const CATEGORY_IDS = ["needs", "actions", "people", "feelings"] as const;
 export type CategoryId = typeof CATEGORY_IDS[number];
 
@@ -104,20 +106,9 @@ export const WORD_COLORS: Record<WordClass, ColorKey> = {
     other: "teal",
 };
 
-export interface Tile {
-    id: string;
+export interface Tile extends Word {
     kind: "word" | "folder";
-    label: string;
-    spokenText?: string;
-    iconName: string | null;
-    mediaId?: string | null;
-    language?: LanguageTag;
-    categoryId: string;
     targetBoardId?: string;
-    colorKey?: ColorKey;
-    wordClass?: WordClass;
-    isCustom?: boolean;
-    isQuickPhrase?: boolean;
 }
 
 export type CellKey = `${number}:${number}`;
@@ -144,6 +135,7 @@ export interface CatalogBoard {
     iconName: string | null;
     isBuiltIn: boolean;
     gridOverride?: GridConfig;
+    layoutModeOverride?: "manual" | "automatic";
     pages: BoardPage[];
 }
 

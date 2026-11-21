@@ -13,7 +13,6 @@ export interface DummyAccount {
 export interface AuthSession {
     user: User;
     username: string;
-    loggedInAt: string;
 }
 
 export const DUMMY_ACCOUNTS: readonly DummyAccount[] = [

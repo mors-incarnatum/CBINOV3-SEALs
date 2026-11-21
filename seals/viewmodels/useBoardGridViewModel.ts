@@ -1,11 +1,22 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import { useBoardSelector } from "@/store/BoardProvider";
-import { cellKey, inBounds, type CellKey } from "@/lib/board";
+import { cellKey, clampGrid, inBounds, type CellKey } from "@/lib/board";
 
 type ArrowKey = "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown";
 const EMPTY_PINNED_IDS: string[] = [];
+
+interface BoardSize {
+    width: number;
+    height: number;
+    gapX: number;
+    gapY: number;
+}
+
+function fitTracks(size: number, gap: number, tileSize: number) {
+    return Math.max(1, Math.floor((size + gap) / (tileSize + gap)));
+}
 
 /**
  * Finds the next focusable `.aac-tile` button along the same row or column
@@ -46,56 +57,111 @@ function findNextEnabledButton(
     return null;
 }
 
-export function useBoardGridViewModel(boardId: string) {
+export function useBoardGridViewModel(boardId: string, editing: boolean) {
     const {
         board,
         global,
+        globalMode,
         tiles,
         appearance,
         boards,
-        swipeThreshold,
         pinnedTileIds,
         assign,
         swap,
         hide,
-        reflow,
+        reflowBoardToGrid,
         togglePinnedTile,
     } = useBoardSelector(s => ({
         board: s.boards[boardId],
         global: s.gridConfig,
+        globalMode: s.layoutMode ?? "manual",
         tiles: s.tiles,
         appearance: s.tileAppearance,
         boards: s.boards,
-        swipeThreshold: s.accessConfig.swipeThresholdPx ?? 60,
         pinnedTileIds: s.experimentalData?.pinnedTileIds ?? EMPTY_PINNED_IDS,
         assign: s.assignSlot,
         swap: s.swapSlots,
         hide: s.setSlotHidden,
-        reflow: s.reflowOutOfBoundsTiles,
+        reflowBoardToGrid: s.reflowBoardToGrid,
         togglePinnedTile: s.togglePinnedTile,
     }));
 
     const [page, setPage] = useState(0);
     const [target, setTarget] = useState<CellKey | null>(null);
+    const [targetPage, setTargetPage] = useState(0);
     const [editor, setEditor] = useState<"edit" | "replace" | null>(null);
     const [moving, setMoving] = useState<CellKey | null>(null);
-    const touch = useRef<{ x: number; y: number } | null>(null);
+    const [movingPage, setMovingPage] = useState(0);
 
-    const grid = board?.gridOverride ?? global;
-    const pageCount = board?.pages.length || 1;
-    const activePage = Math.min(page, pageCount - 1);
-
-    const cells = Array.from({ length: grid.rows * grid.cols }, (_, i) => {
-        const key = cellKey(Math.floor(i / grid.cols), i % grid.cols);
-        const placement = board?.pages[activePage]?.cells[key];
-        return {
-            key,
-            placement,
-            tile: placement ? tiles[placement.tileId] : undefined,
-        };
+    const [boardSize, setBoardSizeState] = useState<BoardSize>({
+        width: 0,
+        height: 0,
+        gapX: 0,
+        gapY: 0,
     });
 
-    const placement = target ? board?.pages[activePage]?.cells[target] : undefined;
+    const configuredGrid = board?.gridOverride ?? global;
+    const layoutMode = board?.layoutModeOverride ?? globalMode;
+    const automatic = layoutMode === "automatic";
+    const grid = automatic && boardSize.width > 0 && boardSize.height > 0
+        ? clampGrid({
+            cols: fitTracks(boardSize.width, boardSize.gapX, Math.max(44, (appearance.tileWidth ?? 50) * 1.6)),
+            rows: fitTracks(boardSize.height, boardSize.gapY, Math.max(44, (appearance.tileHeight ?? 50) * 1.6)),
+        })
+        : configuredGrid;
+    const { rows, cols } = grid;
+    const savedPages = board?.pages;
+    const pages = useMemo(() => {
+        const slotKeys = Array.from({ length: configuredGrid.rows * configuredGrid.cols }, (_, index) =>
+            cellKey(Math.floor(index / configuredGrid.cols), index % configuredGrid.cols),
+        );
+        const sourcePages = savedPages?.length ? savedPages : [{ cells: {} }];
+        const slots = sourcePages.flatMap((page, pageIndex) => {
+            const keys = automatic
+                ? (Object.keys(page.cells) as CellKey[]).filter(key => page.cells[key]).sort((a, b) => {
+                    const [aRow, aCol] = a.split(":").map(Number);
+                    const [bRow, bCol] = b.split(":").map(Number);
+                    return aRow - bRow || aCol - bCol;
+                })
+                : slotKeys;
+            return keys.map(key => {
+                const placement = page.cells[key];
+                return {
+                    key,
+                    sourcePage: pageIndex,
+                    placement,
+                    tile: placement ? tiles[placement.tileId] : undefined,
+                };
+            });
+        });
+        const capacity = rows * cols;
+        if (automatic && editing) {
+            // An automatic slot always retains the saved address of the tile or empty cell.
+            const emptyCount = capacity - (slots.length % capacity);
+            const emptySlots = sourcePages.flatMap((page, sourcePage) =>
+                slotKeys.filter(key => !page.cells[key]).map(key => ({
+                    key, sourcePage, placement: undefined, tile: undefined,
+                })),
+            );
+            for (let index = 0; index < emptyCount; index++) {
+                const offset = index - emptySlots.length;
+                slots.push(emptySlots[index] ?? {
+                    key: slotKeys[offset % slotKeys.length],
+                    sourcePage: sourcePages.length + Math.floor(offset / slotKeys.length),
+                    placement: undefined,
+                    tile: undefined,
+                });
+            }
+        }
+        return Array.from({ length: Math.max(1, Math.ceil(slots.length / capacity)) }, (_, page) => ({
+            page,
+            cells: slots.slice(page * capacity, (page + 1) * capacity),
+        }));
+    }, [automatic, editing, savedPages, cols, configuredGrid.cols, configuredGrid.rows, rows, tiles]);
+    const pageCount = pages.length;
+    const activePage = Math.min(page, pageCount - 1);
+
+    const placement = target ? board?.pages[targetPage]?.cells[target] : undefined;
     const targetTile = placement ? tiles[placement.tileId] : undefined;
 
     const close = () => {
@@ -103,45 +169,89 @@ export function useBoardGridViewModel(boardId: string) {
         setEditor(null);
     };
 
+    const setBoardSize = useCallback((size: BoardSize) => {
+        setBoardSizeState(current =>
+            current.width === size.width &&
+            current.height === size.height &&
+            current.gapX === size.gapX &&
+            current.gapY === size.gapY
+                ? current
+                : size,
+        );
+    }, []);
+
+    const scrollRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        const container = scrollRef.current;
+        const gridElement = container?.querySelector<HTMLElement>(".board-grid");
+        if (!automatic || !container || !gridElement) return;
+
+        const measure = () => {
+            const styles = window.getComputedStyle(gridElement);
+            setBoardSize({
+                width: container.clientWidth,
+                height: container.clientHeight,
+                gapX: parseFloat(styles.columnGap) || 0,
+                gapY: parseFloat(styles.rowGap) || 0,
+            });
+        };
+
+        measure();
+        const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : undefined;
+        observer?.observe(container);
+        window.addEventListener("resize", measure);
+        return () => {
+            observer?.disconnect();
+            window.removeEventListener("resize", measure);
+        };
+    }, [automatic, appearance.gridGap, setBoardSize]);
+
     return {
+        scrollRef,
         state: {
             board,
             boards,
             ...grid,
+            automatic,
             appearance,
-            cells,
+            pages,
             page: activePage,
             pageCount,
             target,
+            targetPage,
             editor,
             moving,
+            movingPage,
             placement,
             targetTile,
             isTargetPinned: Boolean(targetTile && pinnedTileIds.includes(targetTile.id)),
-            overflow:
-                board?.pages.reduce(
+            overflow: automatic ? 0
+                : board?.pages.reduce(
                     (n, p) => n + Object.keys(p.cells).filter(k => !inBounds(k, grid)).length,
                     0,
                 ) || 0,
         },
         actions: {
-            open: (key: CellKey) => {
+            open: (key: CellKey, pageIndex: number) => {
                 setTarget(key);
-                if (!board?.pages[activePage]?.cells[key]) {
+                setTargetPage(pageIndex);
+                if (!board?.pages[pageIndex]?.cells[key]) {
                     setEditor("replace");
+                } else {
+                    setEditor(null);
                 }
             },
             close,
             setEditor,
             remove: () => {
                 if (target) {
-                    assign(boardId, activePage, target, null);
+                    assign(boardId, targetPage, target, null);
                 }
                 close();
             },
             toggleHidden: () => {
                 if (target) {
-                    hide(boardId, activePage, target, !placement?.hidden);
+                    hide(boardId, targetPage, target, !placement?.hidden);
                 }
                 close();
             },
@@ -153,52 +263,26 @@ export function useBoardGridViewModel(boardId: string) {
             },
             startMove: () => {
                 setMoving(target);
+                setMovingPage(targetPage);
                 close();
             },
-            moveTo: (key: CellKey) => {
-                if (moving) {
-                    swap(boardId, activePage, moving, key);
+            moveTo: (key: CellKey, pageIndex: number) => {
+                if (moving && (automatic || movingPage === pageIndex)) {
+                    swap(boardId, movingPage, moving, key, pageIndex);
                 }
                 setMoving(null);
             },
-            changePage: (n: number) => {
-                setPage(Math.max(0, Math.min(pageCount - 1, n)));
-                setMoving(null);
-                close();
-            },
-            reflow: () => reflow(boardId),
-            onTouchStart: (e: React.TouchEvent) => {
-                touch.current = {
-                    x: e.changedTouches[0].clientX,
-                    y: e.changedTouches[0].clientY,
-                };
-            },
-            onTouchEnd: (e: React.TouchEvent) => {
-                if (!touch.current) return;
-                const dx = e.changedTouches[0].clientX - touch.current.x;
-                const dy = e.changedTouches[0].clientY - touch.current.y;
-                if (Math.abs(dx) > swipeThreshold && Math.abs(dx) > Math.abs(dy)) {
-                    setPage(Math.max(0, Math.min(pageCount - 1, activePage + (dx < 0 ? 1 : -1))));
-                    close();
+            onScroll: (e: React.UIEvent<HTMLDivElement>) => {
+                const { scrollTop, clientHeight } = e.currentTarget;
+                if (clientHeight > 0) {
+                    setPage(Math.min(pageCount - 1, Math.round(scrollTop / clientHeight)));
                 }
-                touch.current = null;
             },
+            reflow: () => reflowBoardToGrid(boardId, configuredGrid),
             onKeyDown: (e: React.KeyboardEvent) => {
                 if (e.key === "Escape") {
                     close();
                     setMoving(null);
-                    return;
-                }
-
-                if (e.key === "PageDown" || e.key === "PageUp") {
-                    e.preventDefault();
-                    setPage(
-                        Math.max(
-                            0,
-                            Math.min(pageCount - 1, activePage + (e.key === "PageDown" ? 1 : -1)),
-                        ),
-                    );
-                    close();
                     return;
                 }
 
@@ -208,10 +292,11 @@ export function useBoardGridViewModel(boardId: string) {
                     e.key === "ArrowUp" ||
                     e.key === "ArrowDown"
                 ) {
-                    const buttons = Array.from(
-                        e.currentTarget.querySelectorAll<HTMLButtonElement>(".aac-tile"),
-                    );
-                    const i = buttons.indexOf(e.target as HTMLButtonElement);
+                    const target = e.target as HTMLElement;
+                    const gridElement = target.closest(".board-grid");
+                    if (!gridElement) return;
+                    const buttons = Array.from(gridElement.querySelectorAll<HTMLButtonElement>(".aac-tile"));
+                    const i = buttons.indexOf(target as HTMLButtonElement);
                     if (i < 0) return;
 
                     const nextButton = findNextEnabledButton(buttons, i, grid.cols, e.key);

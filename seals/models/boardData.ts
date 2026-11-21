@@ -20,7 +20,6 @@ export interface ChatMessage {
     id: string;
     sender: "child" | "guardian";
     text: string;
-    createdAt: string;
 }
 
 export interface ExperimentalData {
@@ -34,6 +33,7 @@ export interface BoardData {
     boards: Record<string, CatalogBoard>;
     catalogOrder: string[];
     gridConfig: GridConfig;
+    layoutMode?: "manual" | "automatic";
     tileAppearance: {
         labelPosition: "top" | "bottom";
         fontScale: "sm" | "md" | "lg";
@@ -41,6 +41,8 @@ export interface BoardData {
         showIcons: boolean;
         gridGap: "compact" | "normal" | "relaxed";
         colorMode: ColorMode;
+        tileWidth: number;
+        tileHeight: number;
     };
     speechConfig: {
         volume: number;
@@ -71,7 +73,6 @@ export interface PreReflowSnapshot {
         previousGrid?: GridConfig;
         pages: BoardPage[];
     }[];
-    timestamp: string;
 }
 
 export const DEFAULT_FEATURE_FLAGS: FeatureFlags = {

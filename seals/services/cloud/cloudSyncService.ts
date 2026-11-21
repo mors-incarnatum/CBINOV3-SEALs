@@ -5,7 +5,9 @@ import { PROFILE_SCHEMA_VERSION, type LocalProfileDocument } from "@/models/prof
 import { getSupabaseBrowserClient, type BoardSupabaseClient } from "@/models/supabase/client";
 import { SupabaseBoardRepository, type IBoardRepository } from "@/models/supabase/boardRepository";
 import type { ProfileRow } from "@/models/supabase/database.types";
-import { mediaRepository, type IMediaRepository } from "@/services/storage/mediaRepository";
+import { tileToWord, wordToTile } from "@/models/supabase/mappers";
+import type { Word } from "@/models/word";
+import { discardPreparedMedia, mediaRepository, type IMediaRepository } from "@/services/storage/mediaRepository";
 
 export interface CloudUser {
     id: string;
@@ -106,17 +108,49 @@ export class CloudSyncService {
             }
             for (const mediaId of mediaIds) {
                 const record = await this.mediaRepo.loadMedia(params.localProfileId, mediaId);
-                if (record) {
-                    await repo.uploadProfileMedia(targetCloudId, mediaId, record.blob, record.mimeType);
+                if (!record) throw new Error(`Cannot publish: missing photo ${mediaId}.`);
+                await repo.uploadProfileMedia(targetCloudId, mediaId, record.blob, record.mimeType);
+            }
+
+            // 2. Normalize boards, words (public.words), and folder tiles (public.tiles).
+            const boards: CatalogBoard[] = Object.values(params.boardData.boards);
+            const boardIds = new Set(boards.map(b => b.id));
+            const fallbackCategoryId = boardIds.has("home") ? "home" : (boards[0]?.id ?? "home");
+            const words: Word[] = [];
+            const folderTiles: Tile[] = [];
+            for (const tile of Object.values(params.boardData.tiles)) {
+                const normalizedCategoryId = boardIds.has(tile.categoryId) ? tile.categoryId : fallbackCategoryId;
+                if (tile.kind === "word") {
+                    words.push(tileToWord({ ...tile, categoryId: normalizedCategoryId }));
+                } else if (tile.kind === "folder" && tile.targetBoardId && boardIds.has(tile.targetBoardId)) {
+                    folderTiles.push({ ...tile, categoryId: normalizedCategoryId });
                 }
             }
 
-            // 2. Commit boards, tiles, and settings atomically with revision check.
-            const boards: CatalogBoard[] = Object.values(params.boardData.boards);
-            const tiles: Tile[] = Object.values(params.boardData.tiles);
-            const nextRevision = await repo.publishProfileSnapshot(targetCloudId, expectedRev, boards, tiles, {
+            // 3. Fetch existing remote rows to determine stale IDs.
+            const [existingBoards, existingTiles, existingWords] = await Promise.all([
+                repo.listBoards(targetCloudId),
+                repo.listTiles(targetCloudId),
+                repo.listWords(targetCloudId),
+            ]);
+            const wordIdSet = new Set(words.map(w => w.id));
+            const folderIdSet = new Set(folderTiles.map(t => t.id));
+            const staleWordIds = existingWords.map(w => w.id).filter(id => !wordIdSet.has(id));
+            const staleTileIds = existingTiles.map(t => t.id).filter(id => !folderIdSet.has(id));
+            const staleBoardIds = existingBoards.map(b => b.id).filter(id => !boardIds.has(id));
+
+            // 4. Sync tables in foreign-key-safe order.
+            await repo.saveBoards(targetCloudId, boards);
+            await Promise.all([
+                repo.deleteTiles(targetCloudId, staleTileIds),
+                repo.deleteWords(targetCloudId, staleWordIds),
+            ]);
+            await Promise.all([repo.saveWords(targetCloudId, words), repo.saveTiles(targetCloudId, folderTiles)]);
+            await repo.deleteBoards(targetCloudId, staleBoardIds);
+            await repo.saveSettings(targetCloudId, {
                 catalogOrder: params.boardData.catalogOrder,
                 gridConfig: params.boardData.gridConfig,
+                layoutMode: params.boardData.layoutMode,
                 tileAppearance: params.boardData.tileAppearance,
                 speechConfig: params.boardData.speechConfig,
                 accessConfig: {
@@ -128,6 +162,14 @@ export class CloudSyncService {
                 featureFlags: params.boardData.featureFlags,
             });
 
+            // 5. Clean up orphaned storage objects in profile-media.
+            const remoteMediaIds = await repo.listProfileMedia(targetCloudId);
+            const orphanedMediaIds = remoteMediaIds.filter(id => !mediaIds.has(id));
+            if (orphanedMediaIds.length > 0) {
+                await repo.removeProfileMedia(targetCloudId, orphanedMediaIds);
+            }
+
+            const nextRevision = params.cloudProfileId ? (expectedRev ?? 1) + 1 : (expectedRev ?? 1);
             return { ok: true, cloudProfileId: targetCloudId, revision: nextRevision };
         } catch (error) {
             const msg = error instanceof Error ? error.message : "Cloud publish failed.";
@@ -155,31 +197,31 @@ export class CloudSyncService {
         if (!user) return { ok: false, error: "Please sign in as a guardian first." };
 
         const repo = this.makeRepo(client);
+        const localProfileId = `profile-${uid()}`;
         try {
-            const [boards, tiles, settings] = await Promise.all([
+            const [boards, folderTiles, words, settings] = await Promise.all([
                 repo.listBoards(cloudProfile.id),
                 repo.listTiles(cloudProfile.id),
+                repo.listWords(cloudProfile.id),
                 repo.getSettings(cloudProfile.id),
             ]);
 
-            const localProfileId = `profile-${uid()}`;
             const defaults = initialData();
             const boardMap: Record<string, CatalogBoard> = {};
             for (const b of boards) boardMap[b.id] = b;
             const tileMap: Record<string, Tile> = {};
-            for (const t of tiles) tileMap[t.id] = t;
+            for (const t of words.map(wordToTile)) tileMap[t.id] = t;
+            for (const t of folderTiles) tileMap[t.id] = t;
 
             // Download referenced media into local IndexedDB under the new localProfileId.
-            for (const tile of tiles) {
-                if (!tile.mediaId) continue;
-                const blob = await repo.downloadProfileMedia(cloudProfile.id, tile.mediaId);
-                if (blob) {
-                    await this.mediaRepo.saveMedia(localProfileId, tile.mediaId, blob, {
-                        mimeType: blob.type || "image/webp",
-                        width: 0,
-                        height: 0,
-                    });
-                }
+            const mediaIds = new Set(Object.values(tileMap).flatMap(tile => (tile.mediaId ? [tile.mediaId] : [])));
+            for (const mediaId of mediaIds) {
+                const blob = await repo.downloadProfileMedia(cloudProfile.id, mediaId);
+                if (!blob) throw new Error(`Could not download photo ${mediaId}.`);
+                const saved = await this.mediaRepo.saveMedia(localProfileId, mediaId, blob, {
+                    mimeType: blob.type || "image/webp", width: 0, height: 0,
+                });
+                if (!saved.ok) throw new Error(`Could not save photo ${mediaId}: ${saved.error ?? "storage error"}`);
             }
 
             const boardData: BoardData = {
@@ -190,6 +232,7 @@ export class CloudSyncService {
                     ? {
                           catalogOrder: settings.catalogOrder,
                           gridConfig: settings.gridConfig,
+                          layoutMode: settings.layoutMode ?? defaults.layoutMode,
                           tileAppearance: settings.tileAppearance,
                           speechConfig: settings.speechConfig,
                           accessConfig: {
@@ -211,11 +254,11 @@ export class CloudSyncService {
                     cloudProfileId: cloudProfile.id,
                     cloudRevision: cloudProfile.revision ?? 1,
                     dirty: false,
-                    lastSavedAt: new Date().toISOString(),
                     boardData,
                 },
             };
         } catch (error) {
+            await discardPreparedMedia(localProfileId, this.mediaRepo);
             return {
                 ok: false,
                 error: error instanceof Error ? error.message : "Could not download cloud profile.",

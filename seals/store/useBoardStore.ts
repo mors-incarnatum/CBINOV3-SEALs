@@ -11,7 +11,7 @@ import {
     type ColorKey,
     type SentenceToken,
 } from "@/lib/board";
-import { initialData, migrateV1 } from "@/lib/boardDefaults";
+import { initialData } from "@/lib/boardDefaults";
 import { createPinVerifier, verifyPin } from "@/lib/pinVerifier";
 import {
     DEFAULT_FEATURE_FLAGS,
@@ -29,12 +29,13 @@ import {
 import type { User } from "@/models/user";
 import { type AuthSession, findDummyAccountById, isGuardianRole } from "@/models/auth";
 import { authService, type AuthService } from "@/services/auth/authService";
+import { isValidChatMessage } from "@/services/chat/chatSocketService";
 import { localProfileService, LocalProfileService } from "@/services/storage/localProfileService";
 import { mediaRepository } from "@/services/storage/mediaRepository";
 import { ttsService } from "@/services/tts/ttsService";
 
 export type { BoardData } from "@/models/boardData";
-export { initialData, migrateV1 };
+export { initialData };
 
 const MAX_SENTENCE_HISTORY = 20;
 
@@ -48,7 +49,6 @@ export interface BoardState extends BoardData {
     storageStatus: LocalStorageStatus;
     storageError: string | null;
     dirty: boolean;
-    lastSavedAt: string | null;
 
     // Session-local state (never persisted to localStorage or cloud)
     sentenceHistory: SentenceToken[][];
@@ -84,11 +84,19 @@ export interface BoardState extends BoardData {
     // Editing session guard (W07)
     unlockEditSession: (pin?: string) => Promise<{ ok: boolean; error?: string }>;
     lockEditSession: () => void;
-    setEditPin: (pin: string | null) => Promise<void>;
+    setEditPin: (pin: string | null) => Promise<boolean>;
 
     // Layout & grid commands (W02)
     setGridConfig: (grid: GridConfig, boardId?: string) => boolean;
+    applyBoardSettings: (
+        grid: GridConfig,
+        appearance: BoardData["tileAppearance"],
+        mode: "manual" | "automatic",
+        boardId?: string,
+        useGlobal?: boolean,
+    ) => boolean;
     reflowOutOfBoundsTiles: (boardId: string) => boolean;
+    reflowBoardToGrid: (boardId: string, grid: GridConfig) => void;
     setGridConfigAndReflow: (grid: GridConfig, boardId?: string) => boolean;
     rollbackReflow: () => boolean;
     setTileAppearance: (patch: Partial<BoardData["tileAppearance"]>) => boolean;
@@ -106,7 +114,7 @@ export interface BoardState extends BoardData {
     // Tile & catalog commands (W02, W03, W06, W07)
     upsertTile: (tile: Tile) => boolean;
     assignSlot: (boardId: string, page: number, cell: CellKey, tileId: string | null) => boolean;
-    swapSlots: (boardId: string, page: number, from: CellKey, to: CellKey) => boolean;
+    swapSlots: (boardId: string, page: number, from: CellKey, to: CellKey, toPage?: number) => boolean;
     setSlotHidden: (boardId: string, page: number, cell: CellKey, hidden: boolean) => boolean;
     createCatalog: (input: {
         name: string;
@@ -117,7 +125,9 @@ export interface BoardState extends BoardData {
     }) => string | null;
     updateCatalog: (
         id: string,
-        patch: Partial<Pick<CatalogBoard, "name" | "shortName" | "colorKey" | "iconName" | "gridOverride">>,
+        patch: Partial<
+            Pick<CatalogBoard, "name" | "shortName" | "colorKey" | "iconName" | "gridOverride" | "layoutModeOverride">
+        >,
     ) => boolean;
     deleteCatalog: (id: string) => boolean;
     reorderCatalog: (id: string, direction: number) => boolean;
@@ -126,7 +136,8 @@ export interface BoardState extends BoardData {
 
     // Experimental module data (W09 - retained when disabled)
     addScribbleDraft: (text: string) => void;
-    addChatMessage: (sender: ChatMessage["sender"], text: string) => void;
+    addChatMessage: (sender: ChatMessage["sender"], text: string) => ChatMessage | null;
+    receiveChatMessages: (incoming: ChatMessage[]) => void;
     togglePinnedTile: (tileId: string) => boolean;
 }
 
@@ -164,6 +175,7 @@ function extractBoardDataWithSentence(state: BoardData, sentence: SentenceToken[
         boards: state.boards,
         catalogOrder: state.catalogOrder,
         gridConfig: state.gridConfig,
+        layoutMode: state.layoutMode ?? "manual",
         tileAppearance: state.tileAppearance,
         speechConfig: state.speechConfig,
         accessConfig: state.accessConfig,
@@ -171,6 +183,75 @@ function extractBoardDataWithSentence(state: BoardData, sentence: SentenceToken[
         ...(state.experimentalData ? { experimentalData: state.experimentalData } : {}),
         sentence,
     };
+}
+
+function normalizeDimension(value: number | undefined): number {
+    return value === undefined || !Number.isFinite(value) ? 50 : Math.max(1, Math.min(100, Math.round(value)));
+}
+
+function normalizeAppearance(
+    appearance: BoardData["tileAppearance"],
+): BoardData["tileAppearance"] {
+    return {
+        ...appearance,
+        tileWidth: normalizeDimension(appearance.tileWidth),
+        tileHeight: normalizeDimension(appearance.tileHeight),
+    };
+}
+
+// Creates the expected page arrangement without modifying the board.
+function createRepackedPages(
+    board: CatalogBoard,
+    grid: GridConfig,
+): CatalogBoard["pages"] {
+    const placements = board.pages.flatMap(page =>
+        Object.entries(page.cells)
+            .filter(([, placement]) => !!placement)
+            .sort(([a], [b]) => {
+                const [aRow, aCol] = a.split(":").map(Number);
+                const [bRow, bCol] = b.split(":").map(Number);
+
+                return aRow - bRow || aCol - bCol;
+            })
+            .map(([, placement]) => placement!),
+    );
+
+    const capacity = grid.rows * grid.cols;
+    const pageCount = Math.max(
+        1,
+        Math.ceil(placements.length / capacity),
+    );
+
+    return Array.from({ length: pageCount }, (_, pageIndex) => {
+        const cells: CatalogBoard["pages"][number]["cells"] = {};
+
+        placements
+            .slice(
+                pageIndex * capacity,
+                (pageIndex + 1) * capacity,
+            )
+            .forEach((placement, index) => {
+                const key = cellKey(
+                    Math.floor(index / grid.cols),
+                    index % grid.cols,
+                );
+
+                cells[key] = { ...placement };
+            });
+
+        return { cells };
+    });
+}
+
+function repackBoard(
+    data: BoardData,
+    id: string,
+    gridOverride?: GridConfig,
+) {
+    const board = data.boards[id];
+    if (!board) return;
+    const grid = gridOverride ?? board.gridOverride ?? data.gridConfig;
+    board.pages = createRepackedPages(board, grid);
 }
 
 export function extractBoardData(state: BoardData): BoardData {
@@ -223,6 +304,7 @@ function reflowBoard(data: BoardData, id: string) {
 
 export const createBoardStore = (profileService: LocalProfileService = localProfileService) =>
     createStore<BoardState>()((set, get) => {
+        let persistenceBlocked = false;
         let failedPinAttempts = 0;
         let pinLockoutUntil = 0;
 
@@ -233,6 +315,10 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
 
         const persistCurrent = (nextData: BoardData) => {
             const s = get();
+            if (persistenceBlocked) {
+                set({ dirty: true });
+                return false;
+            }
             const doc: LocalProfileDocument = {
                 schemaVersion: PROFILE_SCHEMA_VERSION,
                 localProfileId: s.activeProfileId,
@@ -240,7 +326,6 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
                 cloudProfileId: s.cloudProfileId,
                 cloudRevision: s.cloudRevision,
                 dirty: true,
-                lastSavedAt: s.lastSavedAt,
                 boardData: nextData,
             };
             const res = profileService.saveProfileDocument(doc);
@@ -255,9 +340,9 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
                     storageStatus: "ok",
                     storageError: null,
                     dirty: false,
-                    lastSavedAt: new Date().toISOString(),
                 });
             }
+            return res.ok;
         };
 
         const canMutateSettings = (): boolean => {
@@ -293,7 +378,6 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
                         : undefined,
                     pages: structuredClone(current.boards[id].pages),
                 })),
-                timestamp: new Date().toISOString(),
             };
             const ok = mutateBoard(data => {
                 if (grid) {
@@ -326,7 +410,6 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
                     storageStatus: "ok",
                     storageError: null,
                     dirty: false,
-                    lastSavedAt: loaded.doc.lastSavedAt ?? null,
                     sentenceHistory: [],
                     sentenceRevision: s.sentenceRevision + 1,
                     preReflowSnapshot: null,
@@ -354,7 +437,6 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
             storageStatus: "ok",
             storageError: null,
             dirty: false,
-            lastSavedAt: null,
             sentenceHistory: [],
             sentenceRevision: 0,
             preReflowSnapshot: null,
@@ -376,6 +458,7 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
 
             hydrateFromStorage: async (svc = profileService) => {
                 const res = await svc.loadOrMigrateActiveProfile();
+                persistenceBlocked = res.status !== "ok";
                 const rawSession = authService.loadSession();
                 const validAccount = rawSession ? findDummyAccountById(rawSession.user.id) : null;
                 if (rawSession && !validAccount) {
@@ -399,6 +482,7 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
                     svc.saveActiveIndex({ ...res.index, profiles });
                 }
                 resetPinAttempts();
+                const activeUser = get().currentUser ?? session?.user ?? null;
                 set({
                     ...res.activeDocument.boardData,
                     experimentalData: res.activeDocument.boardData.experimentalData,
@@ -410,12 +494,11 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
                     storageStatus: res.status,
                     storageError: res.errorMessage ?? null,
                     dirty: res.activeDocument.dirty ?? false,
-                    lastSavedAt: res.activeDocument.lastSavedAt ?? null,
                     sentenceHistory: [],
                     sentenceRevision: 0,
                     preReflowSnapshot: null,
-                    currentUser: session?.user ?? null,
-                    isEditUnlocked: isGuardianRole(session?.user?.role),
+                    currentUser: activeUser,
+                    isEditUnlocked: isGuardianRole(activeUser?.role),
                 });
             },
 
@@ -437,6 +520,7 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
                     profiles: s.profiles,
                 };
                 svc.saveActiveIndex(nextIndex);
+                persistenceBlocked = false;
                 resetPinAttempts();
                 set({
                     ...loaded.doc.boardData,
@@ -448,7 +532,6 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
                     storageStatus: "ok",
                     storageError: null,
                     dirty: false,
-                    lastSavedAt: loaded.doc.lastSavedAt ?? null,
                     sentenceHistory: [],
                     sentenceRevision: get().sentenceRevision + 1,
                     preReflowSnapshot: null,
@@ -457,11 +540,16 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
             },
 
             createProfile: (name, boardData, svc = profileService) => {
+                if (persistenceBlocked) return get().activeProfileId;
                 if (!canMutateSettings()) return get().activeProfileId;
                 ttsService.stop();
-                const doc = svc.createProfileDocument(name, boardData);
-                const saveRes = svc.saveProfileDocument(doc);
                 const s = get();
+                const data = boardData ?? initialData();
+                const doc = svc.createProfileDocument(name, {
+                    ...data,
+                    accessConfig: { ...data.accessConfig, pinVerifier: s.accessConfig.pinVerifier, editPin: null },
+                });
+                const saveRes = svc.saveProfileDocument(doc);
                 const profiles = [
                     ...s.profiles,
                     { localProfileId: doc.localProfileId, name: doc.name, cloudProfileId: null },
@@ -482,7 +570,6 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
                     storageStatus: saveRes.status,
                     storageError: saveRes.errorMessage ?? null,
                     dirty: !saveRes.ok,
-                    lastSavedAt: doc.lastSavedAt ?? null,
                     sentenceHistory: [],
                     sentenceRevision: s.sentenceRevision + 1,
                     preReflowSnapshot: null,
@@ -492,6 +579,7 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
             },
 
             renameProfile: (localProfileId, name, svc = profileService) => {
+                if (persistenceBlocked) return;
                 if (!canMutateSettings()) return;
                 const trimmed = name.trim();
                 if (!trimmed) return;
@@ -517,6 +605,7 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
             },
 
             deleteProfile: (localProfileId, svc = profileService) => {
+                if (persistenceBlocked) return;
                 if (!canMutateSettings()) return;
                 const s = get();
                 if (s.profiles.length <= 1) return;
@@ -568,7 +657,12 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
             },
 
             importProfileDocument: (doc, svc = profileService) => {
-                if (!canMutateSettings()) return get().activeProfileId;
+                if (persistenceBlocked) {
+                    throw new Error("Cannot modify the profile list while saved data is unavailable or unsupported.");
+                }
+                if (!canMutateSettings()) {
+                    throw new Error("Guardian access is required to import a profile.");
+                }
                 const s = get();
                 // Import preparation already stored media under this profile ID.
                 const newId = doc.localProfileId;
@@ -577,12 +671,22 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
                 }
                 const imported: LocalProfileDocument = {
                     ...doc,
+                    boardData: {
+                        ...doc.boardData,
+                        accessConfig: {
+                            ...doc.boardData.accessConfig,
+                            editPin: null,
+                            pinVerifier: s.accessConfig.pinVerifier,
+                        },
+                    },
                     schemaVersion: PROFILE_SCHEMA_VERSION,
                     localProfileId: newId,
                     dirty: false,
-                    lastSavedAt: new Date().toISOString(),
                 };
                 const saveRes = svc.saveProfileDocument(imported);
+                if (!saveRes.ok) {
+                    throw new Error(saveRes.errorMessage ?? "Could not save imported profile.");
+                }
                 const profiles = [
                     ...s.profiles,
                     {
@@ -591,11 +695,15 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
                         cloudProfileId: imported.cloudProfileId ?? null,
                     },
                 ];
-                svc.saveActiveIndex({
+                const indexRes = svc.saveActiveIndex({
                     schemaVersion: PROFILE_SCHEMA_VERSION,
                     activeProfileId: s.activeProfileId,
                     profiles,
                 });
+                if (!indexRes.ok) {
+                    svc.deleteProfileDocument(newId);
+                    throw new Error(indexRes.errorMessage ?? "Could not save profile list.");
+                }
                 set({
                     profiles,
                     storageStatus: saveRes.status,
@@ -675,23 +783,78 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
             lockEditSession: () => set({ isEditUnlocked: false }),
 
             setEditPin: async pin => {
-                if (!canMutateSettings()) return;
+                if (!canMutateSettings()) return false;
                 const trimmed = pin?.trim() ?? "";
-                const verifier = trimmed ? await createPinVerifier(trimmed) : null;
-                const data = extractBoardData(get());
-                data.accessConfig.editPin = null;
-                data.accessConfig.pinVerifier = verifier;
-                set({ ...data, isEditUnlocked: true });
-                persistCurrent(data);
+                if (trimmed && !/^\d{4,12}$/.test(trimmed)) return false;
+                try {
+                    const verifier = trimmed ? await createPinVerifier(trimmed) : null;
+                    const data = extractBoardData(get());
+                    data.accessConfig = { ...data.accessConfig, editPin: null, pinVerifier: verifier };
+                    if (!persistCurrent(data)) return false;
+                    set({ accessConfig: data.accessConfig, isEditUnlocked: true });
+                    return true;
+                } catch {
+                    return false;
+                }
             },
 
             setGridConfig: (grid, id) =>
                 mutateBoard(d => {
                     if (id && d.boards[id]) d.boards[id].gridOverride = clampGrid(grid);
                     else if (!id) d.gridConfig = clampGrid(grid);
+                    Object.values(d.boards)
+                        .filter(b => (id ? b.id === id : !b.gridOverride))
+                        .forEach(b => repackBoard(d, b.id));
                 }),
 
-            reflowOutOfBoundsTiles: id => reflowBoards([id]),
+            applyBoardSettings: (grid, appearance, mode, id, useGlobal = false) =>
+                mutateBoard(d => {
+                    const nextGrid = clampGrid(grid);
+                    const previousGrid = (id ? d.boards[id]?.gridOverride : undefined) ?? d.gridConfig;
+                    if (id && d.boards[id]) {
+                        if (useGlobal) {
+                            delete d.boards[id].gridOverride;
+                            delete d.boards[id].layoutModeOverride;
+                        } else {
+                            d.boards[id].layoutModeOverride = mode;
+                            if (mode === "manual") d.boards[id].gridOverride = nextGrid;
+                        }
+                    } else if (!id) {
+                        d.layoutMode = mode;
+                        if (mode === "manual") d.gridConfig = nextGrid;
+                    }
+                    d.tileAppearance = normalizeAppearance(appearance);
+                    if (
+                        mode === "manual" &&
+                        !useGlobal &&
+                        (nextGrid.rows !== previousGrid.rows || nextGrid.cols !== previousGrid.cols)
+                    ) {
+                        Object.values(d.boards)
+                            .filter(b =>
+                                id
+                                    ? b.id === id
+                                    : !b.gridOverride && (b.layoutModeOverride ?? d.layoutMode) === "manual",
+                            )
+                            .forEach(b => repackBoard(d, b.id, nextGrid));
+                    }
+                }),
+
+            reflowOutOfBoundsTiles: id => mutateBoard(d => repackBoard(d, id)),
+
+            // Only update Zustand when the actual page arrangement changes.
+            reflowBoardToGrid: (id, grid) => {
+                const state = get();
+                const board = state.boards[id];
+                if (!board) return;
+                const nextGrid = clampGrid(grid);
+                const nextPages = createRepackedPages(board, nextGrid);
+                if (JSON.stringify(board.pages) === JSON.stringify(nextPages)) {
+                    return;
+                }
+                mutateBoard(data => {
+                    data.boards[id].pages = nextPages;
+                });
+            },
 
             setGridConfigAndReflow: (grid, id) =>
                 reflowBoards(
@@ -724,7 +887,7 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
 
             setTileAppearance: patch =>
                 mutateBoard(d => {
-                    d.tileAppearance = { ...d.tileAppearance, ...patch };
+                    d.tileAppearance = normalizeAppearance({ ...d.tileAppearance, ...patch });
                 }),
 
             setSpeechConfig: patch => {
@@ -852,16 +1015,19 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
                     }
                 }),
 
-            swapSlots: (id, page, from, to) =>
+            swapSlots: (id, page, from, to, toPage = page) =>
                 mutateBoard(d => {
-                    const cells = d.boards[id]?.pages[page]?.cells;
-                    if (!cells) return;
-                    const a = cells[from];
-                    const b = cells[to];
-                    delete cells[from];
-                    delete cells[to];
-                    if (a) cells[to] = a;
-                    if (b) cells[from] = b;
+                    const pages = d.boards[id]?.pages;
+                    const source = pages?.[page]?.cells;
+                    if (!pages || !source) return;
+                    while (pages.length <= toPage) pages.push({ cells: {} });
+                    const destination = pages[toPage].cells;
+                    const a = source[from];
+                    const b = destination[to];
+                    delete source[from];
+                    delete destination[to];
+                    if (a) destination[to] = a;
+                    if (b) source[from] = b;
                 }),
 
             setSlotHidden: (id, page, key, hidden) =>
@@ -966,20 +1132,46 @@ export const createBoardStore = (profileService: LocalProfileService = localProf
 
             addChatMessage: (sender, text) => {
                 const trimmed = text.trim();
-                if (!trimmed) return;
+                if (!trimmed) return null;
+                const message: ChatMessage = {
+                    id: uid(),
+                    sender,
+                    text: trimmed,
+                };
                 mutateBoard(d => {
                     const prev = d.experimentalData?.chatMessages ?? [];
                     d.experimentalData = {
                         ...(d.experimentalData ?? {}),
-                        chatMessages: [
-                            ...prev,
-                            {
-                                id: uid(),
-                                sender,
-                                text: trimmed,
-                                createdAt: new Date().toISOString(),
-                            },
-                        ],
+                        chatMessages: [...prev, message],
+                    };
+                }, false);
+                return message;
+            },
+
+            receiveChatMessages: incoming => {
+                if (!Array.isArray(incoming) || incoming.length === 0) return;
+                const existing = get().experimentalData?.chatMessages ?? [];
+                const existingIds = new Set(existing.map(m => m.id));
+                const fresh: ChatMessage[] = [];
+                for (const item of incoming) {
+                    if (isValidChatMessage(item) && !existingIds.has(item.id)) {
+                        existingIds.add(item.id);
+                        fresh.push(item);
+                    }
+                }
+                if (fresh.length === 0) return;
+                mutateBoard(d => {
+                    const prev = d.experimentalData?.chatMessages ?? [];
+                    const mergedById = new Map<string, ChatMessage>();
+                    for (const msg of prev) {
+                        mergedById.set(msg.id, msg);
+                    }
+                    for (const msg of fresh) {
+                        mergedById.set(msg.id, msg);
+                    }
+                    d.experimentalData = {
+                        ...(d.experimentalData ?? {}),
+                        chatMessages: Array.from(mergedById.values()),
                     };
                 }, false);
             },
