@@ -64,7 +64,11 @@ export default function BoardShell({ children }: { children: React.ReactNode }) 
                                 </span>
                             )}
                             {vm.state.featureFlags?.scribblePractice && (
-                                <button type="button" onClick={() => vm.actions.setPanel("scribble")}>
+                                <button
+                                    type="button"
+                                    aria-pressed={vm.state.isScribbleOpen}
+                                    onClick={vm.actions.toggleScribble}
+                                >
                                     ✍ Scribble
                                 </button>
                             )}
@@ -150,13 +154,15 @@ export default function BoardShell({ children }: { children: React.ReactNode }) 
                     )}
 
                     <main
-                        className={vm.state.isChatOpen ? "board-main !pb-0" : "board-main"}
+                        className={vm.state.isChatOpen || vm.state.isScribbleOpen ? "board-main !pb-0" : "board-main"}
                         aria-label={
                             vm.state.isChatOpen
                                 ? "Parent-child chat."
-                                : vm.state.wheelEnabled
-                                  ? "Communication board. Right-click or press Shift F10 for catalogs."
-                                  : "Communication board."
+                                : vm.state.isScribbleOpen
+                                  ? "Scribble handwriting practice."
+                                  : vm.state.wheelEnabled
+                                    ? "Communication board. Right-click or press Shift F10 for catalogs."
+                                    : "Communication board."
                         }
                         tabIndex={0}
                         onContextMenu={vm.actions.onContextMenu}
@@ -164,12 +170,14 @@ export default function BoardShell({ children }: { children: React.ReactNode }) 
                     >
                         {vm.state.isChatOpen ? (
                             <ParentChatModal onClose={() => vm.actions.setPanel(null)} />
+                        ) : vm.state.isScribbleOpen ? (
+                            <ScribblePracticeModal onClose={() => vm.actions.setPanel(null)} />
                         ) : (
                             children
                         )}
                     </main>
 
-                    {vm.state.isGuardian && !vm.state.isChatOpen && (
+                    {vm.state.isGuardian && !vm.state.isChatOpen && !vm.state.isScribbleOpen && (
                         <button
                             type="button"
                             className="board-layout-control"
@@ -216,9 +224,6 @@ export default function BoardShell({ children }: { children: React.ReactNode }) 
                     )}
                     {vm.state.isGuardian && vm.state.panel === "catalogs" && (
                         <CatalogManager onClose={() => vm.actions.setPanel(null)} />
-                    )}
-                    {vm.state.panel === "scribble" && vm.state.featureFlags?.scribblePractice && (
-                        <ScribblePracticeModal onClose={() => vm.actions.setPanel(null)} />
                     )}
                     {vm.state.isGuardian && vm.edit.state.pinDialog && (
                         <Modal

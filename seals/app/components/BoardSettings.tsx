@@ -880,7 +880,7 @@ export default function BoardSettings({
                                     a.setFeatureFlags({ scribblePractice: e.target.checked })
                                 }
                             />{" "}
-                            Scribble practice area (mock OCR prototype)
+                            Scribble &amp; handwriting practice area (Puter / Tesseract / Local OCR)
                         </label>
                         <label>
                             <input

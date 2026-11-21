@@ -40,7 +40,9 @@ export function useBoardShellViewModel() {
     const clearStorageError = useBoardStore(s => s.clearStorageError);
     const storeLogout = useBoardStore(s => s.logout);
 
-    const [panel, setPanelState] = useState<ShellPanel>(() => (pathname === "/chat" ? "chat" : null));
+    const [panel, setPanelState] = useState<ShellPanel>(() =>
+        pathname === "/chat" ? "chat" : pathname === "/scribble" ? "scribble" : null,
+    );
     const [wheel, setWheel] = useState<{ x: number; y: number } | null>(null);
     const lastBoardPathRef = useRef(pathname.startsWith("/board") ? pathname : "/board");
 
@@ -52,7 +54,8 @@ export function useBoardShellViewModel() {
 
     useEffect(() => {
         const handlePopState = () => {
-            setPanelState(window.location.pathname === "/chat" ? "chat" : null);
+            const nextPath = window.location.pathname;
+            setPanelState(nextPath === "/chat" ? "chat" : nextPath === "/scribble" ? "scribble" : null);
         };
         window.addEventListener("popstate", handlePopState);
         return () => window.removeEventListener("popstate", handlePopState);
@@ -71,6 +74,8 @@ export function useBoardShellViewModel() {
     const activePanel: ShellPanel =
         !isGuardian && (panel === "settings" || panel === "catalogs" || panel === "layout") ? null : panel;
     const isChatOpen = activePanel === "chat" && (Boolean(featureFlags?.parentChildChat) || pathname === "/chat");
+    const isScribbleOpen =
+        activePanel === "scribble" && (Boolean(featureFlags?.scribblePractice) || pathname === "/scribble");
 
     const chatMessagesRef = useRef(chatMessages);
     useEffect(() => {
@@ -89,12 +94,22 @@ export function useBoardShellViewModel() {
     const setPanel = (next: ShellPanel) => {
         if (!isGuardian && (next === "settings" || next === "catalogs" || next === "layout")) return;
         if (typeof window !== "undefined") {
-            if (next === "chat" && window.location.pathname !== "/chat") {
-                if (window.location.pathname.startsWith("/board")) {
-                    lastBoardPathRef.current = window.location.pathname;
+            const currentPath = window.location.pathname;
+            if (next === "chat" && currentPath !== "/chat") {
+                if (currentPath.startsWith("/board")) {
+                    lastBoardPathRef.current = currentPath;
                 }
                 window.history.pushState(null, "", "/chat");
-            } else if (next !== "chat" && window.location.pathname === "/chat") {
+            } else if (next === "scribble" && currentPath !== "/scribble") {
+                if (currentPath.startsWith("/board")) {
+                    lastBoardPathRef.current = currentPath;
+                }
+                window.history.pushState(null, "", "/scribble");
+            } else if (
+                next !== "chat" &&
+                next !== "scribble" &&
+                (currentPath === "/chat" || currentPath === "/scribble")
+            ) {
                 window.history.pushState(null, "", lastBoardPathRef.current || "/board");
             }
         }
@@ -102,9 +117,13 @@ export function useBoardShellViewModel() {
     };
 
     const toggleChat = () => setPanel(activePanel === "chat" ? null : "chat");
+    const toggleScribble = () => setPanel(activePanel === "scribble" ? null : "scribble");
 
     const logout = () => {
-        if (typeof window !== "undefined" && window.location.pathname === "/chat") {
+        if (
+            typeof window !== "undefined" &&
+            (window.location.pathname === "/chat" || window.location.pathname === "/scribble")
+        ) {
             window.history.pushState(null, "", "/board");
         }
         setPanelState(null);
@@ -121,6 +140,7 @@ export function useBoardShellViewModel() {
             isGuardian,
             panel: activePanel,
             isChatOpen,
+            isScribbleOpen,
             wheel: wheelEnabled ? wheel : null,
             boardId: decodeURIComponent(pathname.split("/")[2] || "home"),
             activeProfileName,
@@ -136,6 +156,7 @@ export function useBoardShellViewModel() {
         actions: {
             setPanel,
             toggleChat,
+            toggleScribble,
             logout,
             closeWheel: () => setWheel(null),
             openCatalogs: () => {
@@ -146,12 +167,12 @@ export function useBoardShellViewModel() {
             },
             clearStorageError,
             onContextMenu: (e: React.MouseEvent) => {
-                if (!wheelEnabled || isChatOpen) return;
+                if (!wheelEnabled || isChatOpen || isScribbleOpen) return;
                 e.preventDefault();
                 setWheel({ x: e.clientX, y: e.clientY });
             },
             onKeyDown: (e: React.KeyboardEvent) => {
-                if (!wheelEnabled || isChatOpen) return;
+                if (!wheelEnabled || isChatOpen || isScribbleOpen) return;
                 if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
                     e.preventDefault();
                     setWheel({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
